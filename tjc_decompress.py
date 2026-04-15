@@ -2,14 +2,18 @@
 TJC Image Decompression Module
 
 Decompression algorithm discovered from TJC TFT firmware analysis.
-Each 20-byte segment encodes 8 pixels using nibble-based run-length encoding.
+Each 20-byte block contains: 4 bytes control (8 nibbles = repeat counts) + 8 RGB565 pixels.
+
+Note: Some images may have block alignment issues in the middle, causing slight
+shifting artifacts. This may be due to the relative offset calculation or
+specific image dimensions affecting how blocks are processed.
 """
 
 
 def control_to_nibbles(ctrl):
     """
-    Convert 4-byte control to 8 nibbles (in LE order).
-    Each byte is split into 2 nibbles: low nibble first, then high nibble.
+    Convert 4-byte control to 8 nibbles.
+    Each byte split into 2 nibbles: low nibble first, then high nibble.
     """
     nibbles = []
     for b in ctrl:
@@ -18,44 +22,35 @@ def control_to_nibbles(ctrl):
     return nibbles
 
 
-def decompress_segment(segment):
+def decompress_block(block):
     """
-    Decompress a single 20-byte segment.
+    Decompress a single 20-byte block.
 
-    Segment structure:
-    - Bytes 0-11:  6 RGB565 pixels (raw)
-    - Bytes 12-15: 4 bytes - control (FE + nibble values)
-    - Bytes 16-19: 2 RGB565 pixels (raw, part of next segment's first 6)
+    Block structure:
+    - Bytes 0-3:   4 bytes control = 8 nibbles (repeat counts)
+    - Bytes 4-19:  8 RGB565 pixels (16 bytes)
 
     Returns: list of RGB565 color values
     """
-    if len(segment) < 20:
-        raise ValueError(f"Segment too short: {len(segment)} bytes (need 20)")
+    if len(block) < 20:
+        raise ValueError(f"Block too short: {len(block)} bytes (need 20)")
 
-    # Extract 8 color values from segment
-    colors = []
-
-    # First 6 colors (bytes 0-11)
-    for j in range(6):
-        lo = segment[j * 2]
-        hi = segment[j * 2 + 1]
-        colors.append(lo | (hi << 8))
-
-    # Last 2 colors (bytes 16-19)
-    for j in range(2):
-        lo = segment[16 + j * 2]
-        hi = segment[17 + j * 2]
-        colors.append(lo | (hi << 8))
-
-    # Get control nibbles
-    ctrl = segment[12:16]
+    # Get control nibbles (repeat counts)
+    ctrl = block[0:4]
     nibbles = control_to_nibbles(ctrl)
+
+    # Extract 8 RGB565 pixel values (bytes 4-19)
+    pixels = []
+    for j in range(8):
+        lo = block[4 + j * 2]
+        hi = block[4 + j * 2 + 1]
+        pixels.append(lo | (hi << 8))
 
     # Apply nibbles as repeat counts
     decoded = []
     for j, n in enumerate(nibbles):
-        if j < len(colors):
-            decoded.extend([colors[j]] * n)
+        if j < len(pixels):
+            decoded.extend([pixels[j]] * n)
 
     return decoded
 
@@ -65,31 +60,39 @@ def decompress_image_data(data):
     Decompress full image data from TJC compressed format.
 
     Args:
-        data: bytes - compressed image data
+        data: bytes - compressed image data (with 20-byte resource header)
 
     Returns:
         list of RGB565 color values (16-bit integers)
     """
+    # Skip 20-byte resource header
+    if len(data) < 20:
+        raise ValueError(
+            f"Data too short: {len(data)} bytes (need at least 20 for header)"
+        )
+
+    image_data = data[20:]
+
     decoded = []
 
-    # Process 20-byte segments
-    segment_count = len(data) // 20
+    # Process 20-byte blocks: 4 bytes control + 8 RGB565 pixels
+    block_count = len(image_data) // 20
 
-    for i in range(segment_count):
+    for i in range(block_count):
         start = i * 20
-        segment = data[start : start + 20]
+        block = image_data[start : start + 20]
 
         try:
-            pixels = decompress_segment(segment)
+            pixels = decompress_block(block)
             decoded.extend(pixels)
         except ValueError as e:
-            print(f"Warning: Segment {i} error: {e}")
+            print(f"Warning: Block {i} error: {e}")
 
     # Handle remaining bytes (if any)
-    remaining = len(data) % 20
+    remaining = len(image_data) % 20
     if remaining > 0:
-        # Try to parse remaining as raw pixels
-        remainder = data[-remaining:]
+        remainder = image_data[-remaining:]
+        # Remaining should be multiple of 2 (RGB565 pixels)
         for i in range(0, len(remainder) - 1, 2):
             if i + 1 < len(remainder):
                 lo = remainder[i]
@@ -124,14 +127,6 @@ def rgb565_to_rgb(rgb565):
 def create_image_from_rgb565(pixels, width, height):
     """
     Create PIL Image from RGB565 pixel data.
-
-    Args:
-        pixels: list of RGB565 values
-        width: int - image width
-        height: int - image height
-
-    Returns:
-        PIL Image in RGB mode
     """
     from PIL import Image
 
@@ -151,12 +146,19 @@ def create_image_from_rgb565(pixels, width, height):
     return img
 
 
+def get_resource_header_size():
+    """
+    Returns the size of the resource metadata header (20 bytes).
+    """
+    return 20
+
+
 def decompress_and_create_image(data, width, height):
     """
     Decompress TJC compressed data and create PIL Image.
 
     Args:
-        data: bytes - compressed image data
+        data: bytes - compressed image data (including 20-byte resource header)
         width: int - expected image width
         height: int - expected image height
 
