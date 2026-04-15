@@ -16,6 +16,16 @@ The file can be divided in the follwoing sections. Details about each section ar
 * [User code](#user-code)
 * [File CRC](#file-crc)
 
+
+### Known Component Locations
+
+| Component              | Offset (tjc.tft) | Size (bytes) | Source File                             |
+|------------------------|------------------|--------------|---------------------------------------- |
+| Header                 | 0x000000         | 65,536       | Generated (header1 + header2 + padding) |
+| Bootloader Header      | 0x010000         | 144 (?)      | Generated                               |
+| Resources              | (see header)     | varied       | input.bin + qr.bin + syscom.bin + Images + Fonts + etc. |
+| File CRC               | varied           | 4            | Checksum (LE) |
+
 This structure is valid for Nextion and TJC TFT files. 
 
 Any addresses or offsets in the following sections are relative to the beginning of that section, not relative to the file start.
@@ -97,20 +107,36 @@ As stated above, the data in this header is XORed with a key. Currently it is un
 
 ## Bootloader and Ressources
 
-The bootloader and the ressources (images, fonts) share a section. This section has its own header. 
+The bootloader and the ressources (images, fonts) share a section. This section has its own header.
 
 Apparently this section is *independant* of the display resolution. NX4827T043 and NX8048T050 have the exact same header and bootloader (assuming same ressources). Another interesting point: following to the datasheet, the NX4024K032 and the NX8048K070 have different processors (48MHz vs 108MHz). However, this section contains no difference!
 
-### Header
+### Bootloader Header Structure
 
-Assumptions so far...:
-* Goes from offset `0x00` to `0x8f`
-* Every value is 4 byte aligned
-* Some values appear in the [file header](#file-header), too (maked in the table above).
+The bootloader header at 0x010000 contains table of components. Each component entry in the bootloader header is 12 bytes:
 
-### Bootloader
+| Offset (within entry) | Size | Description |
+|-----------------|------|------------|
+| +0x00 | 4 bytes | Relative offset from 0x010000 - add to get file offset |
+| +0x04 | 4 bytes | Component size (LE) |
+| +0x08 | 4 bytes | Meta/unknown - appears unused (always 0) |
 
-With editor v1.61.1 the bootloader goes from of `0x10080-0x2a046`. It is independant of the user code section and especially independant of the vendor. This means that TJC and Nextion use the *exact* same bootloader for the same display models. Since the content of the section is abiguous to me, I can't analyse it further. Parts of it are apparently unencrypted. Why? Because it includes the following strings:
+
+#### TJC Firmware Binary Components
+
+TJC firmware files (tested on TJC3224T132_011N_P04, editor v1.65.5) are assembled from pre-compiled binary components embedded verbatim at offsets defined in bootloader components table:
+ 1. Relative offset 0x90000000 (LE) at 0x010000 → File offset = 0x010000 + 0x0090 = 0x010090 input.bin
+ 2. Relative offset 0x32450000 (LE) at 0x01000C → File offset = 0x010000 + 0x4532 = 0x014532 ???
+ 3. Relative offset 0x161b0200 (LE) at 0x010018 → File offset = 0x010000 + 0x21b16 = 0x031b16 ???
+ 4. Relative offset 0x544e0200 (LE) at 0x010024 → File offset = 0x010000 + 0x24E54 = 0x034e54 qr0.bin
+ 5. Relative offset 0x8e550200 (LE) at 0x010030 → File offset = 0x010000 + 0x2558e = 0x03558e syscom.bin
+ 5. etc.
+ 
+This clearly implies that USART HMI components stored as .bin files may contain multiple components addressed differently in bootloader component table.
+
+### Bootloader (syscom.bin)
+
+The bootloader is independant of the user code section and especially independant of the vendor. This means that TJC and Nextion use the *exact* same bootloader for the same display models. These are the strings found in the bootloader section:
 ```
 Please re download the resource file
 stackbot Error.....
@@ -160,6 +186,8 @@ LcdDriver Is Updateed
 Syscom Is Updateed
 ```
 
+These same strings are also found in syscom.bin, since that file seem to be embedded as a component.
+
 However, other parts seem to be obfuscated like [Header 2](#header-2). Regions that contain repeating patterns, like if a bunch of small-value 32bit integers were XORed with some value. More investigations needed. 
 
 Note: actually it is more an interpreter than a bootloader. The user code doesn't get compiled, it gets translated into byte code (see below). 
@@ -169,6 +197,13 @@ Note: actually it is more an interpreter than a bootloader. The user code doesn'
 Pictures first, Fonts afterwars. At the beginning of a font you'll find its name as displayed in the Nextion editor. The fonts seem to be an exact copy of the corresponding .zi files. At least the beginning of a font matches the .zi file header documentation.
 
 Haven't analyzed it further than that.
+
+Resource/Image table is pointed at by bootloader header.
+- Entry size: 24 bytes each
+- Entry format: `magic2:0x0301600a or 0x0301640a(4) | resource_id(4) | offset(4) | image_width(2) | image_height(2) | data_size(4) | extra(4)`
+- Offset is relative to absolute Resource/Image table, not the beginning of the file
+- An image resource at designated offset is prepended with 20 bytes of additional metadata
+- An actual encoded image bytes are thus at +0x14 to the offset from Resource entry table
 
 ## User Code
 
@@ -539,19 +574,3 @@ This section contains the code for page 0. It begins with a fill command for the
 At the very end of the file is a CRC value. It uses the same algorithm as the HMI file. Whether it's the word- or the byte based variant of the algorithm is controlled by the [file header](#file-header)
 
 Additionally the first (the lowest) byte of the CRC value is XORed with the bytes at the following addresses (all in the [first header](#first-header)): `0x03`, `0x2e`, `0x3c`. 
-
-## TJC Firmware Binary Components
-
-TJC firmware files (tested on TJC3224T132_011N_P04, editor v1.65.5) are assembled from pre-compiled binary components embedded verbatim at fixed offsets.
-
-### Known Component Locations
-
-| Component | Offset (tjc.tft) | Size (bytes) | Source File |
-|-----------|------------------|--------------|--------------|
-| Header    | 0x000000         | 65,536       | Generated (header1 + header2 + padding) |
-| Bootloader header | 0x010000 | 90 (?)       | Generated |
-| input.bin | 0x010090         | 17,570       | HMI IDE /input.bin |
-| qr0.bin | 0x034E54 | 1,850 | HMI IDE /qr0.bin |
-| syscom.bin | 0x03558E | 1,556 | HMI IDE /syscom.bin |
-| User code + resources | 0x035BA2 | ~6,900,000 | Compiled UI code |
-| File CRC | 0x722E78 | 4 | Checksum (LE) |

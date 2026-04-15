@@ -2,12 +2,12 @@
 import struct
 
 FIRMWARE = "/home/devim/Projects/TJC_display/tjc.tft"
-TABLE_OFFSET = 0x38CF0
+TABLE_OFFSET = 0x38CF4
 ENTRY_STRIDE = 24
 
 with open(FIRMWARE, "rb") as f:
     print(
-        f"{'Magic1':<10} {'Magic2':<10} {'ID':<6} {'MetaOffset':<8} {'Rel.Offset':<8} {'DataOffset':<8} {'W':<4} {'H':<4} {'Size':<10} {'Format'}"
+        f"{'Magic2':<10} {'ID':<6} {'Rel.Offset':<8} {'Abs.Offset':<8} {'W':<4} {'H':<4} {'Size':<10} {'Extra':<10} {'Format'}"
     )
     print("-" * 70)
 
@@ -18,12 +18,12 @@ with open(FIRMWARE, "rb") as f:
             break
 
         current_offset = TABLE_OFFSET + ENTRY_STRIDE * i
-        magic1, magic2, entry_id, offset, wh, size = struct.unpack("<IIIIII", data)
+        magic, entry_id, offset, wh, size, extra = struct.unpack("<IIIIII", data)
 
-        if magic2 == 0:
+        if magic == 0:
             continue
 
-        if magic2 not in [0x0301640A, 0x0301600A]:
+        if magic not in [0x0301640A, 0x0301600A]:
             print(f"Entry {i}: unknown magic=0x{magic:08x}, stopping")
             break
 
@@ -44,5 +44,5 @@ with open(FIRMWARE, "rb") as f:
             fmt = "UNKNOWN"
 
         print(
-            f"0x{magic1:<8x} 0x{magic2:<8x} {entry_id:<6} 0x{current_offset:<6x} 0x{offset:<6x} 0x{current_offset + ENTRY_STRIDE + offset:<6x} {width:<4} {height:<4} {size:<10} {fmt}"
+            f"0x{magic:<8x} {entry_id:<6} 0x{offset:<6x} 0x{TABLE_OFFSET + offset:<6x} {width:<4} {height:<4} {size:<10} 0x{magic1:<8x} {fmt}"
         )

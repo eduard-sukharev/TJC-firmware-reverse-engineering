@@ -6,7 +6,7 @@ Extracts bitmap images from TJC TFT firmware for Creality Ender-3 V3 SE 3D print
 
 - `TFT.md` - Reverse engineering attempt at TFT firmware for screens by Nextion. TJC is Chinese ripoff of Nextion.
 - `tjc.tft` - Main firmware (7.48 MB)
-- `print_resource_table.py` - script to parse and print out Resource table values
+- `print_resource_table.py` - script to parse and print out Resource/Images table values
 - `resource_table.txt` - parsed resource table printout
 - `extract_*.py` - Various extraction scripts (check dates for latest working version)
 - `extracted/` - Output directory
@@ -14,13 +14,13 @@ Extracts bitmap images from TJC TFT firmware for Creality Ender-3 V3 SE 3D print
 
 ## Critical Offsets
 
-- **Resource table: 0x38cf0** (NOT 0x38cf4 - this was the bug)
+- **Resource/Images table: 0x38cf4** (NOT 0x38cf0 - this was the bug)
 - Entry size: 24 bytes each
-- Entry format: `magic1(4) | magic2:0x0301600a or 0x0301640a(4) | resource_id(4) | offset(4) | image_width(2) | image_height(2) | data_size(4)`
+- Entry format: `magic2:0x0301600a or 0x0301640a(4) | resource_id(4) | offset(4) | image_width(2) | image_height(2) | data_size(4) | extra(4)`
 
 ## Encoding Status
 
-**UNRESOLVED**: Image data at resource offsets is either raw RGB565 (usually for 20x20 images), or some kind of compression encoding (for larger images). Stored data is ~60% of expected raw size.
+**UNRESOLVED**: Image resource block contains additional 20 bytes of leading metadata. Actual image data at resource offsets +0x14 is either raw RGB565 (usually for 20x20 images), or some kind of compression encoding (for larger images). Stored data is ~60% of expected raw size.
 
 - 240x320 image: 92409 bytes stored vs 153600 expected (60%)
 
@@ -48,7 +48,7 @@ node phash.js test.png ref.png  # in ~/.agents/skills/image-compare-phash/script
 
 ## What NOT to Do
 
-- Don't assume resource table offset is 0x38cf4 - it's 0x38cf0
+- Don't assume resource table offset is 0x38cf0 - the actual images table offset is defined in Bootloader header as one of the components
 - Don't use DWIN 9.ICO format - TJC uses different format
 
 ## Open Questions
