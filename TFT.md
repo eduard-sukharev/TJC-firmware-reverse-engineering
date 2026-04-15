@@ -122,17 +122,28 @@ The bootloader header at 0x010000 contains table of components. Each component e
 | +0x08 | 4 bytes | Meta/unknown - appears unused (always 0) |
 
 
-#### TJC Firmware Binary Components
+TJC firmware files (tested on TJC3224T132_011N_P04, editor v1.65.5) are assembled from
+pre-compiled binary components embedded verbatim at offsets defined in bootloader
+components table at 0x010000:
 
-TJC firmware files (tested on TJC3224T132_011N_P04, editor v1.65.5) are assembled from pre-compiled binary components embedded verbatim at offsets defined in bootloader components table:
- 1. Relative offset 0x90000000 (LE) at 0x010000 → File offset = 0x010000 + 0x0090 = 0x010090 input.bin
- 2. Relative offset 0x32450000 (LE) at 0x01000C → File offset = 0x010000 + 0x4532 = 0x014532 ???
- 3. Relative offset 0x161b0200 (LE) at 0x010018 → File offset = 0x010000 + 0x21b16 = 0x031b16 ???
- 4. Relative offset 0x544e0200 (LE) at 0x010024 → File offset = 0x010000 + 0x24E54 = 0x034e54 qr0.bin
- 5. Relative offset 0x8e550200 (LE) at 0x010030 → File offset = 0x010000 + 0x2558e = 0x03558e syscom.bin
- 5. etc.
- 
-This clearly implies that USART HMI components stored as .bin files may contain multiple components addressed differently in bootloader component table.
+| Entry | Relative Offset | File Offset | Size (bytes) | Component |
+|-------|----------------|-------------|--------------|-----------|
+| 0     | 0x00000090     | 0x010090    | 17,570       | input.bin |
+| 1     | 0x00004532     | 0x014532    | 120,292      |           |
+| 2     | 0x00021b16     | 0x031B16    | 13,118       |           |
+| 3     | 0x00024e54     | 0x034E54    | 1,850        | qr0.bin   |
+| 4     | 0x0002558e     | 0x03558E    | 1,556        | syscom.bin|
+| 5     | 0x00025ba2     | 0x035BA2    | 3,298        |           |
+| 6     | 0x00026884     | 0x036884    | 9,328        |           |
+| 7     | 0x00028cf4     | 0x038CF4    | 7,104,219    | Resources |
+| 8     | 0x006ef3cf     | 0x07EF3CF   | 54,289       | User code |
+
+All entries are 12 bytes: rel_offset(4) + size(4) + meta(4). Entries 9-11 are empty.
+
+Note: The resource block (Entry 7) can be identified as the component with the
+largest size. Its offset (0x38cf4 in this firmware) points to the Resource/Image
+table, not the actual image data. Actual image data is at table offset + entry
+relative offset + 0x14 (20-byte metadata prefix).
 
 ### Bootloader (syscom.bin)
 

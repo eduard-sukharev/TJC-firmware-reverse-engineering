@@ -14,9 +14,33 @@ Extracts bitmap images from TJC TFT firmware for Creality Ender-3 V3 SE 3D print
 
 ## Critical Offsets
 
-- **Resource/Images table: 0x38cf4** (NOT 0x38cf0 - this was the bug)
-- Entry size: 24 bytes each
-- Entry format: `magic2:0x0301600a or 0x0301640a(4) | resource_id(4) | offset(4) | image_width(2) | image_height(2) | data_size(4) | extra(4)`
+- **Bootloader Header: 0x010000** (12 entries × 12 bytes = 144 bytes)
+  - Entry 0-8: binary components (bootloader, resources, user code)
+  - Entry 7: largest component = Resource/Images block (7.1 MB)
+  - Entry 8: User code section (54 KB)
+
+- **Resource/Images table: 0x38cf4** (derived from Entry 7 offset in bootloader header)
+  - Found by: parse bootloader header at 0x010000, find entry with largest size
+  - Entry size: 24 bytes each
+  - Total entries: 2,628 (for this firmware)
+  - Entry format: `magic2(4) | id(4) | rel_offset(4) | width(2) | height(2) | size(4) | extra(4)`
+  - Actual data at: table_offset + rel_offset + 0x14
+
+## Bootloader Header Parsing
+
+To extract resources from any TJC/Nextion TFT file:
+
+1. Read bootloader header at file offset **0x010000**
+2. Each entry is 12 bytes: `rel_offset(4) | size(4) | meta(4)`
+3. Calculate file offset: `0x010000 + rel_offset`
+4. Find entry with **largest size** → this is the Resource block
+5. Parse resource table at that file offset
+6. Each resource entry (24 bytes) gives: dimensions, size, relative offset
+7. Image data = table_offset + rel_offset + 0x14
+
+Example (TJC3224T132_011N_P04):
+- Entry 7: size=7,104,219 → Resource block at 0x38cf4
+- Entry 8: size=54,289 → User code at 0x7ef3cf
 
 ## Encoding Status
 
@@ -50,6 +74,7 @@ node phash.js test.png ref.png  # in ~/.agents/skills/image-compare-phash/script
 
 - Don't assume resource table offset is 0x38cf0 - the actual images table offset is defined in Bootloader header as one of the components
 - Don't use DWIN 9.ICO format - TJC uses different format
+- Don't assume bootloader header has exactly 8 entries - it has 12 (entries 9-11 may be empty)
 
 ## Open Questions
 
