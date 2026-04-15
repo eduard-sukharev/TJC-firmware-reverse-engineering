@@ -44,15 +44,33 @@ Example (TJC3224T132_011N_P04):
 
 ## Encoding Status
 
-**UNRESOLVED**: Image resource block contains additional 20 bytes of leading metadata. Actual image data at resource offsets +0x14 is either raw RGB565 (usually for 20x20 images), or some kind of compression encoding (for larger images). Stored data is ~60% of expected raw size.
+**PARTIALLY RESOLVED**: Image resource block contains 20 bytes of leading metadata per resource. 
 
-- 240x320 image: 92409 bytes stored vs 153600 expected (60%)
+- First byte of metadata determines encoding:
+  - `0x00` = RAW RGB565 (634 entries, ~24%)
+  - `0x04` = TJC PROPRIETARY COMPRESSION (1994 entries, ~76%)
+
+For RAW images, stored size ≈ expected (width × height × 2).
+For COMPRESSED images, stored size ~30-60% of expected (e.g., 240x320: 92409 bytes vs 153600 expected).
+
+Metadata structure:
+- Bytes 0-3: Encoding flag (0x00=RAW, 0x04=compressed)
+- Bytes 4-7: Possibly original size or checksum
+- Bytes 8-19: Unknown
+
+**COMPRESSION STILL UNRESOLVED**: Algorithm unknown. TJC uses proprietary encoding.
 
 ## Working Extractions
 
-- **20x20 icons at verified offsets**: Extracted using blank separation bytes heuristics, mapped into icons.csv:
-  - Small 20x20 icons are mostly confirmed working, use with simple RGB565 LE data encoding
-  - These match reference icons 11, 28, 30 from dwin-ico-tools/Marlin_7
+- **64 RAW images extracted**: Using compression flag (first byte of 20-byte metadata = 0x00), excluding 4x2 placeholders
+  - 20x20 icons (62 entries)
+  - 24x24 icons (2 entries)
+  - Convert RGB565 LE to RGB for PNG output
+
+- **1994 COMPRESSED images**: Not yet decodable
+  - TJC proprietary compression algorithm unknown
+
+- **570 placeholders skipped**: 4x2 pixel images (likely cursor/indicator placeholders)
 
 ## Dependencies
 
@@ -78,7 +96,7 @@ node phash.js test.png ref.png  # in ~/.agents/skills/image-compare-phash/script
 
 ## Open Questions
 
-1. What is the exact encoding of the image data blocks?
-2. What is the resource table metadata/magic bit/flag that defines whether the image is raw RGB565 or has some kind of compression applied?
-3. Is control word = skip N pixels vs count of valid pixels?
-4. When compression used, does each 10-word (20-byte) block encode 8 pixels?
+1. ~~What is the exact encoding of the image data blocks?~~ - First byte of metadata: 0x00=RAW, 0x04=compressed
+2. ~~What is the resource table metadata/magic bit/flag that defines whether the image is raw RGB565 or has some kind of compression applied?~~ - Confirmed: byte 0 of 20-byte metadata = compression flag
+3. What is the TJC proprietary compression algorithm?
+4. What do bytes 4-19 of the 20-byte metadata encode? (original size? checksum?)
