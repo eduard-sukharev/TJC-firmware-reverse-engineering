@@ -548,10 +548,10 @@ TJC firmware files (tested on TJC3224T132_011N_P04, editor v1.65.5) are assemble
 
 | Component | Offset (tjc.tft) | Size (bytes) | Source File |
 |-----------|------------------|--------------|--------------|
-| Header | 0x000000 | 65,680 | Generated (header + padding) |
-| input.bin | 0x010090 | 17,570 | HMI IDE /input.bin |
+| Header    | 0x000000         | 65,536       | Generated (header1 + header2 + padding) |
+| Bootloader header | 0x010000 | 90 (?)       | Generated |
+| input.bin | 0x010090         | 17,570       | HMI IDE /input.bin |
 | qr0.bin | 0x034E54 | 1,850 | HMI IDE /qr0.bin |
 | syscom.bin | 0x03558E | 1,556 | HMI IDE /syscom.bin |
-| User code + resources | 0x035BA3 | ~6,900,000 | Compiled UI code |
+| User code + resources | 0x035BA2 | ~6,900,000 | Compiled UI code |
 | File CRC | 0x722E78 | 4 | Checksum (LE) |
-
