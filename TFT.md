@@ -539,3 +539,19 @@ This section contains the code for page 0. It begins with a fill command for the
 At the very end of the file is a CRC value. It uses the same algorithm as the HMI file. Whether it's the word- or the byte based variant of the algorithm is controlled by the [file header](#file-header)
 
 Additionally the first (the lowest) byte of the CRC value is XORed with the bytes at the following addresses (all in the [first header](#first-header)): `0x03`, `0x2e`, `0x3c`. 
+
+## TJC Firmware Binary Components
+
+TJC firmware files (tested on TJC3224T132_011N_P04, editor v1.65.5) are assembled from pre-compiled binary components embedded verbatim at fixed offsets.
+
+### Known Component Locations
+
+| Component | Offset (tjc.tft) | Size (bytes) | Source File |
+|-----------|------------------|--------------|--------------|
+| Header | 0x000000 | 65,680 | Generated (header + padding) |
+| input.bin | 0x010090 | 17,570 | HMI IDE /input.bin |
+| qr0.bin | 0x034E54 | 1,850 | HMI IDE /qr0.bin |
+| syscom.bin | 0x03558E | 1,556 | HMI IDE /syscom.bin |
+| User code + resources | 0x035BA3 | ~6,900,000 | Compiled UI code |
+| File CRC | 0x722E78 | 4 | Checksum (LE) |
+

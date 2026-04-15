@@ -1,6 +1,6 @@
 # TJC_display - TJC TFT Firmware Image Extractor
 
-Extracts bitmap images from TJC TFT firmware for Creality Ender-3 V3 SE 3D printer LCD display.
+Extracts bitmap images from TJC TFT firmware for Creality Ender-3 V3 SE 3D printer LCD display. The LCD screen model is TJC3224T132_011N_P04, closest publicly available for sale TJC screen model is TJC3224T132_011N_I_A01.
 
 ## Key Files
 
