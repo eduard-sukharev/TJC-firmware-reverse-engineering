@@ -3,11 +3,12 @@ TJC Image Decompression Module
 
 Decompression algorithm discovered from TJC TFT firmware analysis.
 Each 20-byte block contains: 4 bytes control (8 nibbles = repeat counts) + 8 RGB565 pixels.
-
-Note: Some images may have block alignment issues in the middle, causing slight
-shifting artifacts. This may be due to the relative offset calculation or
-specific image dimensions affecting how blocks are processed.
 """
+
+# Compression flag constants
+COMPRESSION_FLAG_RAW = 0x00
+COMPRESSION_FLAG_COMPRESSED = 0x04
+RESOURCE_HEADER_SIZE = 20
 
 
 def control_to_nibbles(ctrl):
@@ -66,13 +67,41 @@ def decompress_image_data(data):
         list of RGB565 color values (16-bit integers)
     """
     # Skip 20-byte resource header
-    if len(data) < 20:
+    if len(data) < RESOURCE_HEADER_SIZE:
         raise ValueError(
-            f"Data too short: {len(data)} bytes (need at least 20 for header)"
+            f"Data too short: {len(data)} bytes (need at least {RESOURCE_HEADER_SIZE} for header)"
         )
 
-    image_data = data[20:]
+    # Check compression flag
+    compression_flag = data[0]
 
+    if compression_flag == COMPRESSION_FLAG_RAW:
+        # RAW format: no compression, just 20-byte header + raw RGB565 pixels
+        return _decompress_raw(data)
+    elif compression_flag == COMPRESSION_FLAG_COMPRESSED:
+        # Compressed format
+        return _decompress_compressed(data)
+    else:
+        raise ValueError(f"Unknown compression flag: 0x{compression_flag:02X}")
+
+
+def _decompress_raw(data):
+    """Decompress RAW (uncompressed) image data."""
+    image_data = data[RESOURCE_HEADER_SIZE:]
+
+    # Parse as raw RGB565 pairs
+    pixels = []
+    for i in range(0, len(image_data) - 1, 2):
+        lo = image_data[i]
+        hi = image_data[i + 1]
+        pixels.append(lo | (hi << 8))
+
+    return pixels
+
+
+def _decompress_compressed(data):
+    """Decompress compressed image data."""
+    image_data = data[RESOURCE_HEADER_SIZE:]
     decoded = []
 
     # Process 20-byte blocks: 4 bytes control + 8 RGB565 pixels
@@ -91,13 +120,15 @@ def decompress_image_data(data):
     # Handle remaining bytes (if any)
     remaining = len(image_data) % 20
     if remaining > 0:
-        remainder = image_data[-remaining:]
+        # Start position should be after last complete 20-byte block
+        start = block_count * 20
+        remainder = image_data[start : start + remaining]
+
         # Remaining should be multiple of 2 (RGB565 pixels)
         for i in range(0, len(remainder) - 1, 2):
-            if i + 1 < len(remainder):
-                lo = remainder[i]
-                hi = remainder[i + 1]
-                decoded.append(lo | (hi << 8))
+            lo = remainder[i]
+            hi = remainder[i + 1]
+            decoded.append(lo | (hi << 8))
 
     return decoded
 
@@ -112,14 +143,9 @@ def rgb565_to_rgb(rgb565):
     Returns:
         tuple: (r, g, b) each 0-255
     """
-    r = (rgb565 >> 11) & 0x1F
-    g = (rgb565 >> 5) & 0x3F
-    b = rgb565 & 0x1F
-
-    # Scale to 8-bit
-    r = r << 3
-    g = g << 2
-    b = b << 3
+    r = ((rgb565 >> 11) & 0x1F) << 3
+    g = ((rgb565 >> 5) & 0x3F) << 2
+    b = (rgb565 & 0x1F) << 3
 
     return (r, g, b)
 
@@ -130,11 +156,12 @@ def create_image_from_rgb565(pixels, width, height):
     """
     from PIL import Image
 
-    if len(pixels) < width * height:
-        raise ValueError(f"Not enough pixels: {len(pixels)} (need {width * height})")
+    expected = width * height
+    if len(pixels) != expected:
+        print(f"Warning: Got {len(pixels)} pixels, expected {expected}")
 
     # Take exact amount needed
-    pixels = pixels[: width * height]
+    pixels = pixels[:expected]
 
     # Create RGB888 data
     rgb_data = [rgb565_to_rgb(p) for p in pixels]
@@ -150,7 +177,7 @@ def get_resource_header_size():
     """
     Returns the size of the resource metadata header (20 bytes).
     """
-    return 20
+    return RESOURCE_HEADER_SIZE
 
 
 def decompress_and_create_image(data, width, height):
