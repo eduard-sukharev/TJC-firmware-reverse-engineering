@@ -16,12 +16,42 @@ RESOURCES_PATH = "Resources.bin"
 OUTPUT_DIR = "extracted"
 
 # Image parameters for 102x115 images
-IMAGE_WIDTH = 102
-IMAGE_HEIGHT = 115
+IMAGE_WIDTH = 68
+IMAGE_HEIGHT = 64
 
 # Entry size in resource table (24 bytes)
 ENTRY_SIZE = 24
 
+
+def find_resource_entry_by_id(resources_data, lookup_id):
+    """
+    Find resource entry by image id
+    """
+    num_entries = len(resources_data) // ENTRY_SIZE
+
+    for i in range(num_entries):
+        offset = i * ENTRY_SIZE
+
+        if offset + ENTRY_SIZE > len(resources_data):
+            break
+
+        # Parse entry: magic(4) | id(4) | rel_offset(4) | w(2) | h(2) | size(4) | extra(4)
+        res_id = struct.unpack("<I", resources_data[offset + 4 : offset + 8])[0]
+        rel_offset = struct.unpack("<I", resources_data[offset + 8 : offset + 12])[0]
+        size = struct.unpack("<I", resources_data[offset + 16 : offset + 20])[0]
+
+        if res_id == lookup_id:
+            # Data is at rel_offset directly in Resources.bin
+            data_offset = rel_offset
+
+            print(f"Found {width}x{height} at entry {i}:")
+            print(f"  Relative offset: 0x{rel_offset:x}")
+            print(f"  Data offset: 0x{data_offset:x}")
+            print(f"  Compressed size: {size} bytes")
+
+            return (offset, data_offset, size)
+
+    return None
 
 def find_resource_entry_by_size(resources_data, width, height):
     """
