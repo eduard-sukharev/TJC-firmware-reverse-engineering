@@ -8,6 +8,7 @@ Each 20-byte block contains: 4 bytes control (8 nibbles = repeat counts) + 8 RGB
 # Compression flag constants
 COMPRESSION_FLAG_RAW = 0x00
 COMPRESSION_FLAG_COMPRESSED = 0x04
+COMPRESSION_FLAG_RLE01 = 0x01  # 2-byte count (LE) + 1-byte value
 RESOURCE_HEADER_SIZE = 20
 
 
@@ -79,8 +80,11 @@ def decompress_image_data(data):
         # RAW format: no compression, just 20-byte header + raw RGB565 pixels
         return _decompress_raw(data)
     elif compression_flag == COMPRESSION_FLAG_COMPRESSED:
-        # Compressed format
+        # Compressed format (nibble RLE)
         return _decompress_compressed(data)
+    elif compression_flag == COMPRESSION_FLAG_RLE01:
+        # 0x01 format: 2-byte count (LE) + 1-byte value per run
+        return _decompress_rle01(data)
     else:
         raise ValueError(f"Unknown compression flag: 0x{compression_flag:02X}")
 
@@ -96,6 +100,34 @@ def _decompress_raw(data):
         hi = image_data[i + 1]
         pixels.append(lo | (hi << 8))
 
+    return pixels
+
+
+def _decompress_rle01(data):
+    """
+    Decompress 0x01 format: 2-byte count (little-endian) + 1-byte value per run.
+    
+    Format: [count_low(1)][count_high(1)][value(1)][count_low][count_high][value]...
+    Count is 16-bit little-endian, value is 8-bit grayscale/palette index.
+    
+    Returns 8-bit grayscale values (not RGB565).
+    """
+    image_data = data[RESOURCE_HEADER_SIZE:]
+    pixels = []
+    i = 0
+    
+    while i + 2 < len(image_data):
+        count_low = image_data[i]
+        count_high = image_data[i + 1]
+        count = count_low | (count_high << 8)
+        
+        if count == 0:
+            break
+        
+        value = image_data[i + 2]
+        pixels.extend([value] * count)
+        i += 3
+    
     return pixels
 
 
@@ -192,5 +224,25 @@ def decompress_and_create_image(data, width, height):
     Returns:
         PIL Image in RGB mode
     """
+    from PIL import Image as PILImage
+    
     pixels = decompress_image_data(data)
-    return create_image_from_rgb565(pixels, width, height)
+    
+    # Check if we got RGB565 values (0-65535) or 8-bit grayscale (0-255)
+    # RGB565 values would be > 255, grayscale values are <= 255
+    if pixels and isinstance(pixels[0], int) and pixels[0] <= 255:
+        # 8-bit grayscale - convert to RGB
+        expected = width * height
+        # First, trim to exact size
+        pixels = pixels[:expected]
+        
+        # Fill with grayscale value repeated 3 times to make RGB888 tuple
+        rgb_data = [(p, p, p) for p in pixels]
+        
+        img = PILImage.new("RGB", (width, height))
+        img.putdata(rgb_data)
+    else:
+        # RGB565 format
+        img = create_image_from_rgb565(pixels, width, height)
+    
+    return img
