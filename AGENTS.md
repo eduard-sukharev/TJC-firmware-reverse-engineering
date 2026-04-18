@@ -29,8 +29,8 @@ Bytes 4-19: 8 RGB565 pixel values (16 bytes)
 4. For block with nibbles [n0,n1,n2,n3,n4,n5,n6,n7] and pixels [p0,p1...p7]:
    - Output: p0 repeated n0 times, p1 repeated n1 times, etc.
 
-### Resource Header (20 bytes per resource)
-Each compressed resource has a 20-byte header:
+### Resource Metadata Header (20 bytes per resource)
+Each compressed resource has a 20-byte metadata header:
 - Byte 0: Compression flag (0x00 = RAW, 0x04 = COMPRESSED)
 - Bytes 1-19: Additional metadata
 
@@ -50,29 +50,32 @@ The extraction script will:
 
 ## Critical Offsets
 
-- **Bootloader Header: 0x010000** (12 entries × 12 bytes = 144 bytes)
-  - Entry 0-8: binary components (bootloader, resources, user code)
-  - Entry 7: largest component = Resource/Images block (7.1 MB)
-  - Entry 8: User code section (54 KB)
+- **Firmware Partition Table: 0x010000** (12 entries × 12 bytes = 144 bytes)
+  - Entry 0: Bootloader partition
+  - Entry 1: Input partition
+  - Entry 2: QR partition
+  - Entry 3-6: Various binary components
+  - Entry 7: Resources partition (largest, 7.1 MB)
+  - Entry 8: User code partition (54 KB)
 
-- **Resource/Images table: 0x38cf4** (derived from Entry 7 offset in bootloader header)
-  - Found by: parse bootloader header at 0x010000, find entry with largest size
+- **Resource Mapping Table: 0x38cf4** (derived from Entry 7 offset in partition table)
+  - Found by: parse partition table at 0x010000, find entry with largest size
   - Entry size: 24 bytes each
-  - Total entries: 2,628 (for this firmware)
+  - Total entries: 2,641 (for this firmware)
   - Entry format: `magic2(4) | id(4) | rel_offset(4) | width(2) | height(2) | size(4) | extra(4)`
-  - Actual data at: rel_offset (directly in Resources.bin)
+  - Actual data at: rel_offset (directly in Resources partition)
 
-## Bootloader Header Parsing
+## Firmware Partition Table Parsing
 
 To extract resources from any TJC/Nextion TFT file:
 
-1. Read bootloader header at file offset **0x010000**
-2. Each entry is 12 bytes: `rel_offset(4) | size(4) | meta(4)`
+1. Read firmware partition table at file offset **0x010000**
+2. Each partition entry is 12 bytes: `rel_offset(4) | size(4) | meta(4)`
 3. Calculate file offset: `0x010000 + rel_offset`
-4. Find entry with **largest size** → this is the Resource block
-5. Parse resource table at that file offset
+4. Find entry with **largest size** → this is the Resources partition
+5. Parse resource mapping table at that file offset
 6. Each resource entry (24 bytes) gives: dimensions, size, relative offset
-7. Image data at rel_offset in Resources.bin
+7. Image data at rel_offset in Resources partition (+ 20-byte metadata header)
 
 ## Code Reference
 
