@@ -71,8 +71,11 @@ reference art.
 ## Usage
 
 ```bash
-# Extract every graphical asset (2628 images) from the firmware
+# Extract every real graphical asset (2058 images) from the firmware
 python3 extract_all.py -f tjc.tft -o extracted_all
+
+# Include the 570 blank placeholder slots as well
+python3 extract_all.py -f tjc.tft -o extracted_all --include-placeholders
 
 # Same, from a Resources.bin partition dump, also dumping raw RGB565
 python3 extract_all.py -r Resources.bin -o extracted_all --raw
@@ -142,10 +145,20 @@ entry. Reports a per-format tally and a non-zero exit status if anything fails.
 
 ## Status
 
-The image compression is **fully solved**. `extract_all.py` extracts all 2628
-graphical resources (634 RAW + 1994 COMPRESSED) from `tjc.tft` with zero
-failures, and `test_tjc_decompress.py` locks the format in with three
-independent invariants that all hold at 100%.
+The image compression is **fully solved**. `extract_all.py` decodes all 2628
+resource-table entries from `tjc.tft` with zero failures, and
+`test_tjc_decompress.py` locks the format in with three independent invariants
+that all hold at 100%.
+
+Of those 2628 entries, **570 are placeholders**: unassigned picture slots the
+editor emits as a 4x2 solid-white RAW dummy (size 36, `extra=0`). They are
+skipped by default, leaving **2058 real assets** (64 RAW + 1994 compressed).
+Pass `--include-placeholders` to write them out too.
+
+The split is unambiguous - a colour-count census over every entry gives 570
+images with exactly 1 colour, 1 with 2 colours (`id=179`, a genuine 18x18
+indicator), and 2057 with 6 or more. There is no ambiguous middle, so
+filtering on "solid single colour" discards placeholders and nothing else.
 
 ### Remaining work
 

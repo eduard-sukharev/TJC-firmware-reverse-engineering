@@ -131,5 +131,24 @@ def test_nibble_order_is_low_first():
     assert control_to_counts(b"\x21\x00\x00\x00")[:2] == [1, 2]
 
 
+def test_placeholder_census():
+    """Unassigned slots are solid-colour dummies, cleanly separable from real art."""
+    if not RESOURCES.exists():
+        pytest.skip(f"{RESOURCES.name} not present")
+    data = RESOURCES.read_bytes()
+    solid, real, dims = 0, 0, set()
+    for _rid, rel, w, h, size in iter_resources(data):
+        pixels = decompress_image_data(data[rel : rel + size])[: w * h]
+        if len(set(pixels)) == 1:
+            solid += 1
+            dims.add((w, h))
+        else:
+            real += 1
+    # every placeholder is the same 4x2 white dummy, and nothing else is solid
+    assert dims == {(4, 2)}, f"unexpected solid-colour dimensions: {dims}"
+    assert solid == 570, solid
+    assert real == 2058, real
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

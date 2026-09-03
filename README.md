@@ -71,7 +71,7 @@ TJC_display/
 | File | Description |
 |------|-------------|
 | `tjc_decompress.py` | Nibble-based RLE decompression and PNG creation |
-| `extract_all.py` | Extract all 2628 graphical assets from the firmware |
+| `extract_all.py` | Extract all real graphical assets from the firmware |
 | `extract_image.py` | Extract and decompress a single image by id or size |
 | `test_tjc_decompress.py` | Validates the decoder against every resource |
 | `print_resource_table.py` | Parse and print all resources from the firmware |
@@ -84,7 +84,9 @@ TJC_display/
 python3 extract_all.py -f tjc.tft -o extracted_all
 ```
 
-Extracts all 2628 images (634 RAW + 1994 compressed) with zero failures.
+Extracts the 2058 real assets (64 RAW + 1994 compressed) with zero failures.
+570 further entries are unassigned placeholder slots (4x2 solid white) and are
+skipped unless you pass `--include-placeholders`.
 
 ### Extract a Specific Image
 
