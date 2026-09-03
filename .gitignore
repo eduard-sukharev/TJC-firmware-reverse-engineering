@@ -5,3 +5,4 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 USARTHMIsetup_1.65.5.exe
+debug_frames/

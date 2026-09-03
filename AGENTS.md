@@ -116,3 +116,48 @@ python3 extract_image_102x115.py
 
 - Some images may have block misalignment in the middle (shifting artifacts)
 - Compression flag interpretation needs verification for other image sizes
+
+### Flag 0x04 (real firmware compression) is still broken — 2026-09-04 findings
+
+Real firmware (`tjc.tft`/`Resources.bin`) resources use only two compression
+flags: `0x00` RAW (634 of 2628) and `0x04` COMPRESSED (1994 of 2628). Flag
+`0x01` (the one `tjc_decompress.py`/`test_rle01.py` actually validate,
+lo-nibble-first) **never occurs in real firmware** — it only appears in this
+repo's own synthetic `test.tft`. So the passing `0x01` test does not validate
+the `0x04` path that real icons use.
+
+Deep empirical investigation of resource id=2 (102x115, "Print" icon) found:
+
+- **Structurally validated**: block layout (20B = 4B control → 8 nibbles +
+  8×RGB565), hi-nibble-first, LE RGB565, row-major raster, width=102 straight
+  from the resource table. Proof: decoding the 32 leading background-only
+  blocks lands on an *exact* integer row boundary (row 32.0, zero drift) —
+  not possible by chance with a wrong width or wrong nibble scheme. Detail
+  block colors also plausibly match the reference icon's real colors.
+- **Still broken**: despite the above, decoded content for all 8 sibling
+  102x115 icons (Print/Prepare/Control/Leveling x2) lands compressed into the
+  upper-left of the canvas instead of matching the reference art. The pattern
+  is consistent across all 8 icons, not per-image noise, so it's systematic.
+- Brute-forced and ruled out (against `001-reference.jpg` ground truth):
+  reversed nibble order, reversed control-byte order, reversed pixel-index
+  mapping, big-endian RGB565, nibble+1 off-by-one, column-major scan,
+  tiled/banded scan order, alternate reshape widths/strides.
+- **New lead**: the 20-byte resource header's bytes 4-7 (LE uint32) is
+  *always* an exact multiple of 20, and is roughly 90-95% of the resource's
+  total block count (`(size-20)//20`). Looks like it could be an exact
+  block/byte stop-position distinct from the naive `width*height` pixel
+  target, but the exact relationship isn't nailed down yet.
+- `icons.csv` (from an earlier session, perceptual-hash-matched against a
+  labeled external icon set) already flags this same resource as
+  "broken"/unmatched, and flags most 20x20 icons as "correct" — so the bug is
+  size/complexity-correlated, not universal.
+
+Most promising next steps: (1) decode the field at header bytes 4-7 against
+many more `0x04` resources to find its exact formula, (2) disassemble the
+bootloader partition (partition entry 0, 17570 bytes at file offset
+`0x10090`) which contains the actual firmware decompression routine — this is
+the authoritative source but requires ISA identification first, (3) compile a
+new test asset through the real TJC editor (`USARTHMIsetup_1.65.5.exe`, not
+currently runnable in this environment — needs Windows/Wine) sized to force
+flag `0x04` output, to get a genuine known-plaintext pair like the one that
+validated flag `0x01`.
