@@ -12,25 +12,39 @@ COMPRESSION_FLAG_RLE01 = 0x01  # 2-byte count (LE) + 1-byte value
 RESOURCE_HEADER_SIZE = 20
 
 
-def control_to_nibbles(ctrl):
+def control_to_nibbles(ctrl, order="lo"):
     """
     Convert 4-byte control to 8 nibbles.
-    Each byte split into 2 nibbles: low nibble first, then high nibble.
+    
+    Args:
+        ctrl: 4 bytes of control data
+        order: "lo" for lo-first (lo nibble then hi nibble), "hi" for hi-first
+    
+    Returns:
+        list of 8 integers (0-15)
     """
     nibbles = []
     for b in ctrl:
-        nibbles.append(b & 0x0F)  # lower nibble
-        nibbles.append((b >> 4) & 0x0F)  # upper nibble
+        if order == "lo":
+            nibbles.append(b & 0x0F)  # lower nibble first
+            nibbles.append((b >> 4) & 0x0F)  # upper nibble second
+        else:  # hi-first
+            nibbles.append((b >> 4) & 0x0F)  # upper nibble first
+            nibbles.append(b & 0x0F)  # lower nibble second
     return nibbles
 
 
-def decompress_block(block):
+def decompress_block(block, nibble_order="lo"):
     """
     Decompress a single 20-byte block.
 
     Block structure:
     - Bytes 0-3:   4 bytes control = 8 nibbles (repeat counts)
     - Bytes 4-19:  8 RGB565 pixels (16 bytes)
+
+    Args:
+        block: 20 bytes
+        nibble_order: "lo" for lo-first, "hi" for hi-first
 
     Returns: list of RGB565 color values
     """
@@ -39,7 +53,7 @@ def decompress_block(block):
 
     # Get control nibbles (repeat counts)
     ctrl = block[0:4]
-    nibbles = control_to_nibbles(ctrl)
+    nibbles = control_to_nibbles(ctrl, nibble_order)
 
     # Extract 8 RGB565 pixel values (bytes 4-19)
     pixels = []
@@ -57,12 +71,13 @@ def decompress_block(block):
     return decoded
 
 
-def decompress_image_data(data):
+def decompress_image_data(data, nibble_order="lo"):
     """
     Decompress full image data from TJC compressed format.
 
     Args:
         data: bytes - compressed image data (with 20-byte resource header)
+        nibble_order: "lo" for lo-first (test.tft), "hi" for hi-first (tjc.tft main)
 
     Returns:
         list of RGB565 color values (16-bit integers)
@@ -73,18 +88,22 @@ def decompress_image_data(data):
             f"Data too short: {len(data)} bytes (need at least {RESOURCE_HEADER_SIZE} for header)"
         )
 
-    # Check compression flag
     compression_flag = data[0]
 
     if compression_flag == COMPRESSION_FLAG_RAW:
-        # RAW format: no compression, just 20-byte header + raw RGB565 pixels
         return _decompress_raw(data)
     elif compression_flag == COMPRESSION_FLAG_COMPRESSED:
-        # Compressed format (nibble RLE)
-        return _decompress_compressed(data)
+        # 0x04 uses hi-first nibble order for tjc.tft
+        try:
+            return _decompress_compressed(data[RESOURCE_HEADER_SIZE:], nibble_order="hi")
+        except Exception:
+            return _decompress_compressed(data[RESOURCE_HEADER_SIZE:], nibble_order="lo")
     elif compression_flag == COMPRESSION_FLAG_RLE01:
-        # 0x01 format: 2-byte count (LE) + 1-byte value per run
-        return _decompress_rle01(data)
+        # 0x01 uses lo-first nibble order (test.tft)
+        try:
+            return _decompress_compressed(data[RESOURCE_HEADER_SIZE:], nibble_order="lo")
+        except Exception:
+            return _decompress_rle01(data)
     else:
         raise ValueError(f"Unknown compression flag: 0x{compression_flag:02X}")
 
@@ -116,13 +135,16 @@ def _decompress_rle01(data):
     pixels = []
     i = 0
     
+    # Continue until we have enough pixels (or run out of data)
+    # No early termination - continue until data ends
     while i + 2 < len(image_data):
         count_low = image_data[i]
         count_high = image_data[i + 1]
         count = count_low | (count_high << 8)
         
         if count == 0:
-            break
+            i += 3
+            continue
         
         value = image_data[i + 2]
         pixels.extend([value] * count)
@@ -131,30 +153,34 @@ def _decompress_rle01(data):
     return pixels
 
 
-def _decompress_compressed(data):
-    """Decompress compressed image data."""
-    image_data = data[RESOURCE_HEADER_SIZE:]
+def _decompress_compressed(data, nibble_order="lo"):
+    """
+    Decompress compressed image data.
+    
+    Args:
+        data: bytes - image data (after 20-byte header)
+        nibble_order: "lo" for lo-first (test.tft worked), "hi" for hi-first (tjc.tft)
+    """
     decoded = []
 
     # Process 20-byte blocks: 4 bytes control + 8 RGB565 pixels
-    block_count = len(image_data) // 20
+    block_count = len(data) // 20
 
     for i in range(block_count):
         start = i * 20
-        block = image_data[start : start + 20]
+        block = data[start : start + 20]
 
         try:
-            pixels = decompress_block(block)
+            pixels = decompress_block(block, nibble_order)
             decoded.extend(pixels)
         except ValueError as e:
             print(f"Warning: Block {i} error: {e}")
 
     # Handle remaining bytes (if any)
-    remaining = len(image_data) % 20
+    remaining = len(data) % 20
     if remaining > 0:
-        # Start position should be after last complete 20-byte block
         start = block_count * 20
-        remainder = image_data[start : start + remaining]
+        remainder = data[start : start + remaining]
 
         # Remaining should be multiple of 2 (RGB565 pixels)
         for i in range(0, len(remainder) - 1, 2):
@@ -167,7 +193,7 @@ def _decompress_compressed(data):
 
 def rgb565_to_rgb(rgb565):
     """
-    Convert RGB565 (16-bit) to RGB888 (24-bit) tuple.
+    Convert RGB565 (16-bit) to RGB888 (24-bit) tuple using simple multiply.
 
     Args:
         rgb565: int - 16-bit RGB565 value
@@ -175,11 +201,11 @@ def rgb565_to_rgb(rgb565):
     Returns:
         tuple: (r, g, b) each 0-255
     """
-    r = ((rgb565 >> 11) & 0x1F) << 3
-    g = ((rgb565 >> 5) & 0x3F) << 2
-    b = (rgb565 & 0x1F) << 3
+    r = (rgb565 >> 11) & 0x1F
+    g = (rgb565 >> 5) & 0x3F
+    b = rgb565 & 0x1F
 
-    return (r, g, b)
+    return (r * 8, g * 4, b * 8)
 
 
 def create_image_from_rgb565(pixels, width, height):
