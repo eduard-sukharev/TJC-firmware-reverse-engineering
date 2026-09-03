@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "skills": {
+    "binary-analysis": {
+      "source": "laurigates/claude-plugins",
+      "sourceType": "github",
+      "computedHash": "97bc5bd9ac2c6201b750ccfa8483128e025b69f7cb8ab5a7b228eacb3e712917"
+    }
+  }
+}
