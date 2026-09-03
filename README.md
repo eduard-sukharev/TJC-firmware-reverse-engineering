@@ -28,13 +28,19 @@ This reverse engineering effort draws heavily from the following sources:
 
 Reverse engineering the TJC firmware is an ongoing effort because:
 
-1. **Proprietary compression** - TJC uses a custom nibble-based run-length encoding that is not documented anywhere. While the basic algorithm has been cracked, edge cases and different compression modes are still being analyzed.
+1. ~~**Proprietary compression**~~ - **SOLVED.** The custom nibble-RLE format is
+   fully decoded, including the literal-block escape that caused the long-standing
+   misalignment. All 2628 images extract cleanly.
 
-2. **Varying image formats** - Not all images use the same compression scheme. Some images may be stored uncompressed (RAW RGB565), others use the nibble-RLE algorithm, and there may be additional variants yet to discover.
+2. ~~**Alignment artifacts**~~ - **SOLVED.** The artifacts came from blocks whose
+   control field is `1F 11 11 11`: those are *literal* blocks emitting 8 pixels,
+   but a naive run-length reading produced 22, over-running by exactly 14 pixels
+   each and shifting everything after them.
 
 3. **No official documentation** - TJC does not publish any firmware specifications. All knowledge is derived from reverse engineering binary files and comparing outputs with known-good images from the display.
 
-4. **Alignment artifacts** - Some extracted images show block misalignment issues, suggesting there may be additional header or control bytes we haven't fully accounted for.
+4. **Still open** - re-encoding modified images back into a valid `.tft`, and the
+   font section (which appears to be a straight copy of the `.zi` files).
 
 ## AI-Assisted Research
 
@@ -52,10 +58,12 @@ These models helped analyze the binary data, identify patterns in the compressio
 TJC_display/
   tjc.tft               - Main firmware (7.48 MB)
   tjc_decompress.py    - Core decompression module
-  extract_image_102x115.py - Example extraction script
+  extract_all.py       - Extract ALL graphical assets
+  extract_image.py     - Extract a single image by id/dimensions
+  test_tjc_decompress.py - Whole-firmware validation of the decoder
   print_resource_table.py  - Resource table parser
   resource_table.txt  - Parsed resource table output
-  extracted/          - Extracted images output directory
+  extracted_all/      - Extracted images output directory
 ```
 
 ### Key Files
@@ -63,18 +71,26 @@ TJC_display/
 | File | Description |
 |------|-------------|
 | `tjc_decompress.py` | Nibble-based RLE decompression and PNG creation |
-| `extract_image_102x115.py` | Script to extract and decompress a 102x115 image |
+| `extract_all.py` | Extract all 2628 graphical assets from the firmware |
+| `extract_image.py` | Extract and decompress a single image by id or size |
+| `test_tjc_decompress.py` | Validates the decoder against every resource |
 | `print_resource_table.py` | Parse and print all resources from the firmware |
 
 ## Usage
 
+### Extract Everything
+
+```bash
+python3 extract_all.py -f tjc.tft -o extracted_all
+```
+
+Extracts all 2628 images (634 RAW + 1994 compressed) with zero failures.
+
 ### Extract a Specific Image
 
 ```bash
-python3 extract_image_102x115.py
+python3 extract_image.py -r Resources.bin -i 2 -o extracted
 ```
-
-This extracts the 102x115 image (the first main screen icon, "Print") and saves it to `extracted/image_102x115.png`.
 
 ### Parse Resource Table
 
@@ -98,25 +114,40 @@ from tjc_decompress import decompress_image_data, rgb565_to_rgb
 pixels = decompress_image_data(compressed_data)
 ```
 
-## Compression Algorithm
-
-The TJC proprietary compression uses nibble-based run-length encoding:
-
-### Block Structure (20 bytes per block)
-- **Bytes 0-3**: Control (4 bytes) = 8 nibbles (repeat counts)
-- **Bytes 4-19**: 8 RGB565 pixel values (16 bytes)
-
-### Decompression Process
-1. Each control byte is split into 2 nibbles → 8 nibbles total
-2. Each nibble = repeat count for corresponding pixel
-3. Nibble values: 0-15 (represents how many times to repeat that pixel)
-4. For block with nibbles [n0,n1,n2,n3,n4,n5,n6,n7] and pixels [p0,p1...p7]:
-   - Output: p0 repeated n0 times, p1 repeated n1 times, etc.
+## Compression Algorithm (solved)
 
 ### Resource Header (20 bytes per resource)
-Each compressed resource has a 20-byte header:
-- **Byte 0**: Compression flag (0x00 = RAW, 0x04 = COMPRESSED)
-- **Bytes 1-19**: Additional metadata
+- **Byte 0**: Compression flag (`0x00` = RAW, `0x04` = COMPRESSED)
+- **Bytes 4-7**: uint32 LE, the total *used* length of header + payload. The
+  resource table's `size` may be larger; the excess is padding and decoding it
+  corrupts the image.
+
+### Block Structure (20 bytes per block)
+- **Bytes 0-3**: Control (4 bytes)
+- **Bytes 4-19**: 8 RGB565 pixel values, little-endian (16 bytes)
+
+### Two block types
+
+**Literal block** - control field is exactly `1F 11 11 11`. Emit all 8 pixels
+once each. Missing this rule is what caused every previously reported
+"misalignment artifact".
+
+**RLE block** - split each control byte into nibbles, **low nibble first**,
+giving 8 repeat counts paired with the 8 pixels; a count of 0 emits nothing.
+
+```
+counts = [b0&0xF, b0>>4, b1&0xF, b1>>4, b2&0xF, b2>>4, b3&0xF, b3>>4]
+output = p0*n0, p1*n1, ... p7*n7
+```
+
+Output is row-major. The encoder additionally aligns every group of 4 output
+rows to a block boundary; decoders don't need this, but it is a powerful
+invariant for validating an implementation.
+
+### Verification
+Three independent invariants hold at **100%** across all 1994 compressed
+resources: exact pixel count, exact 4-row stripe alignment, and exact consumed
+byte length. Run `python3 -m pytest test_tjc_decompress.py -v`.
 
 ## Critical Offsets
 

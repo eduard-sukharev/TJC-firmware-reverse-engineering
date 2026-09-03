@@ -6,47 +6,83 @@ Extracts bitmap images from TJC TFT firmware for Creality Ender-3 V3 SE 3D print
 
 - `TFT.md` - Reverse engineering attempt at TFT firmware for screens by Nextion. TJC is Chinese ripoff of Nextion.
 - `tjc.tft` - Main firmware (7.48 MB)
-- `tjc_decompress.py` - TJC image decompression module
-- `extract_image_102x115.py` - Script to extract and decompress a 102x115 image
+- `tjc_decompress.py` - TJC image decompression module (format fully solved)
+- `extract_all.py` - Extract **all** graphical assets from a .tft or Resources.bin
+- `extract_image.py` - Extract/decompress a single image by id or dimensions
+- `test_tjc_decompress.py` - Validates the decoder against the whole firmware
 - `print_resource_table.py` - Script to parse and print out Resource/Images table values
 - `resource_table.txt` - Parsed resource table printout
-- `extracted/` - Output directory
+- `extracted_all/` - Output directory
 
-## Compression Algorithm SOLVED
+## Compression Algorithm SOLVED (fully, verified on all 2628 resources)
 
-The TJC proprietary compression uses nibble-based run-length encoding:
+### Resource Metadata Header (20 bytes per resource)
+- **Byte 0**: Compression flag — `0x00` = RAW, `0x04` = COMPRESSED
+- **Bytes 4-7**: uint32 LE — total used byte length of *header + payload*.
+  Anything in the resource table's `size` beyond this is trailing padding and
+  must NOT be decoded. (This field is what makes the decode exact.)
+- Bytes 1-3, 8-19: zero in the stock firmware
+
+RAW payload is just `width*height` little-endian RGB565 pixels.
 
 ### Block Structure (20 bytes per block)
 ```
-Bytes 0-3:   Control (4 bytes) = 8 nibbles (repeat counts)
-Bytes 4-19: 8 RGB565 pixel values (16 bytes)
+Bytes 0-3:   Control (4 bytes)
+Bytes 4-19:  8 RGB565 pixel values, little-endian (16 bytes)
 ```
 
-### Decompression Process
-1. Each control byte split into 2 nibbles → 8 nibbles total
-2. Each nibble = repeat count for corresponding pixel
-3. Nibble values: 0-15 (represents how many times to repeat that pixel)
-4. For block with nibbles [n0,n1,n2,n3,n4,n5,n6,n7] and pixels [p0,p1...p7]:
-   - Output: p0 repeated n0 times, p1 repeated n1 times, etc.
+### Two kinds of block
 
-### Resource Metadata Header (20 bytes per resource)
-Each compressed resource has a 20-byte metadata header:
-- Byte 0: Compression flag (0x00 = RAW, 0x04 = COMPRESSED)
-- Bytes 1-19: Additional metadata
+**1. Literal block** — control field is exactly `1F 11 11 11`.
+All 8 pixels are emitted **once each** (8 pixels total). This is the key that
+was missing for a long time: read naively as run counts that control field
+would yield 22 pixels, so every literal block over-produced by exactly 14
+pixels and shifted the rest of the image.
+
+**2. RLE block** — each control byte is split into two nibbles,
+**low nibble first, then high nibble**, giving 8 repeat counts matched
+one-to-one with the 8 pixels. A count of 0 emits nothing.
+
+```
+counts = [b0&0xF, b0>>4, b1&0xF, b1>>4, b2&0xF, b2>>4, b3&0xF, b3>>4]
+output  = p0*n0, p1*n1, ... p7*n7
+```
+
+Pixels are emitted in plain row-major order.
+
+### Encoder stripe alignment (diagnostic, not needed to decode)
+The encoder aligns the stream so that **every group of 4 output rows ends on a
+20-byte block boundary**, zero-padding unused slots in the last block of each
+group. A decoder does not need to implement this, but it is an extremely
+useful invariant for validating a candidate decoder: with the literal-block
+rule handled correctly, all 4-row stripes sum exactly across all 1994
+compressed resources; with any error they do not.
+
+### How it was verified
+Three independent invariants, all at **100%** over all 1994 compressed
+resources (see `test_tjc_decompress.py`):
+1. decoded pixel count == `width * height`
+2. every 4-row stripe's counts sum exactly
+3. bytes consumed == the length recorded at header bytes 4-7
+
+Plus visual confirmation: decoded icons are pixel-clean and match the
+reference art.
 
 ## Usage
 
 ```bash
-# Extract and decompress a 102x115 image
-python3 extract_image_102x115.py
-```
+# Extract every graphical asset (2628 images) from the firmware
+python3 extract_all.py -f tjc.tft -o extracted_all
 
-The extraction script will:
-1. Find resource entry by dimensions (102x115)
-2. Extract compressed data from Resources.bin
-3. Skip 20-byte resource header
-4. Decompress using nibble-RLE algorithm
-5. Save as PNG to extracted/image_102x115.png
+# Same, from a Resources.bin partition dump, also dumping raw RGB565
+python3 extract_all.py -r Resources.bin -o extracted_all --raw
+
+# Extract a single resource by id
+python3 extract_image.py -r Resources.bin -i 2 -o extracted
+
+# Verify the decoder against the whole firmware
+python3 -m pytest test_tjc_decompress.py -v
+```
 
 ## Critical Offsets
 
@@ -94,70 +130,31 @@ pixels = decompress_image_data(compressed_data)
 # pixels is list of RGB565 values
 ```
 
-### extract_image_102x115.py
+### extract_all.py
 
-Find and extract images by modifying these parameters:
-- `IMAGE_WIDTH = 102`
-- `IMAGE_HEIGHT = 115`
+Parses the partition table, walks the resource mapping table and decodes every
+entry. Reports a per-format tally and a non-zero exit status if anything fails.
 
 ## Dependencies
 
 - Python 3
 - Pillow (PIL)
 
-## Commands
+## Status
 
-```bash
-# Extract 102x115 image
-python3 extract_image_102x115.py
-```
+The image compression is **fully solved**. `extract_all.py` extracts all 2628
+graphical resources (634 RAW + 1994 COMPRESSED) from `tjc.tft` with zero
+failures, and `test_tjc_decompress.py` locks the format in with three
+independent invariants that all hold at 100%.
 
-## Remaining Issues
+### Remaining work
 
-- Some images may have block misalignment in the middle (shifting artifacts)
-- Compression flag interpretation needs verification for other image sizes
-
-### Flag 0x04 (real firmware compression) is still broken — 2026-09-04 findings
-
-Real firmware (`tjc.tft`/`Resources.bin`) resources use only two compression
-flags: `0x00` RAW (634 of 2628) and `0x04` COMPRESSED (1994 of 2628). Flag
-`0x01` (the one `tjc_decompress.py`/`test_rle01.py` actually validate,
-lo-nibble-first) **never occurs in real firmware** — it only appears in this
-repo's own synthetic `test.tft`. So the passing `0x01` test does not validate
-the `0x04` path that real icons use.
-
-Deep empirical investigation of resource id=2 (102x115, "Print" icon) found:
-
-- **Structurally validated**: block layout (20B = 4B control → 8 nibbles +
-  8×RGB565), hi-nibble-first, LE RGB565, row-major raster, width=102 straight
-  from the resource table. Proof: decoding the 32 leading background-only
-  blocks lands on an *exact* integer row boundary (row 32.0, zero drift) —
-  not possible by chance with a wrong width or wrong nibble scheme. Detail
-  block colors also plausibly match the reference icon's real colors.
-- **Still broken**: despite the above, decoded content for all 8 sibling
-  102x115 icons (Print/Prepare/Control/Leveling x2) lands compressed into the
-  upper-left of the canvas instead of matching the reference art. The pattern
-  is consistent across all 8 icons, not per-image noise, so it's systematic.
-- Brute-forced and ruled out (against `001-reference.jpg` ground truth):
-  reversed nibble order, reversed control-byte order, reversed pixel-index
-  mapping, big-endian RGB565, nibble+1 off-by-one, column-major scan,
-  tiled/banded scan order, alternate reshape widths/strides.
-- **New lead**: the 20-byte resource header's bytes 4-7 (LE uint32) is
-  *always* an exact multiple of 20, and is roughly 90-95% of the resource's
-  total block count (`(size-20)//20`). Looks like it could be an exact
-  block/byte stop-position distinct from the naive `width*height` pixel
-  target, but the exact relationship isn't nailed down yet.
-- `icons.csv` (from an earlier session, perceptual-hash-matched against a
-  labeled external icon set) already flags this same resource as
-  "broken"/unmatched, and flags most 20x20 icons as "correct" — so the bug is
-  size/complexity-correlated, not universal.
-
-Most promising next steps: (1) decode the field at header bytes 4-7 against
-many more `0x04` resources to find its exact formula, (2) disassemble the
-bootloader partition (partition entry 0, 17570 bytes at file offset
-`0x10090`) which contains the actual firmware decompression routine — this is
-the authoritative source but requires ISA identification first, (3) compile a
-new test asset through the real TJC editor (`USARTHMIsetup_1.65.5.exe`, not
-currently runnable in this environment — needs Windows/Wine) sized to force
-flag `0x04` output, to get a genuine known-plaintext pair like the one that
-validated flag `0x01`.
+- Re-encoding (compressing modified images back into a valid `.tft`) is not
+  implemented yet; only extraction is.
+- Fonts (the section after the pictures) are still unparsed. They appear to be
+  a straight copy of the corresponding `.zi` files.
+- `icons.csv` / `matches.txt` / `full_mapping.txt` were produced by an older,
+  buggy decoder and their "broken"/"correct" labels are obsolete - the
+  resource-ID-to-icon-name mapping should be redone against the now-correct
+  extraction.
+- The user code partition (partition entry 8) is only partially understood.
