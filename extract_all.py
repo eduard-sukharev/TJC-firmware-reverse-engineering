@@ -70,6 +70,14 @@ def main():
         help="also write solid single-colour placeholder slots (570 4x2 white "
         "dummies in the stock firmware); skipped by default",
     )
+    ap.add_argument(
+        "-l", "--list", action="store_true",
+        help="print the resource table and exit without writing anything",
+    )
+    ap.add_argument(
+        "--only", type=int, action="append", metavar="ID",
+        help="extract only this resource id (repeatable)",
+    )
     args = ap.parse_args()
 
     if args.firmware:
@@ -78,12 +86,25 @@ def main():
         with open(args.resources, "rb") as f:
             data = f.read()
 
+    if args.list:
+        print(f"{'ID':>6}  {'W':>5}x{'H':<5} {'flag':>5} {'alloc':>9} {'offset':>10}")
+        print("-" * 48)
+        n = 0
+        for rid, rel, w, h, size in iter_resources(data):
+            print(f"{rid:>6}  {w:>5}x{h:<5} {'0x%02X' % data[rel]:>5} {size:>9} 0x{rel:08x}")
+            n += 1
+        print(f"\n{n} resource table entries")
+        return 0
+
+    wanted = set(args.only) if args.only else None
     os.makedirs(args.output, exist_ok=True)
 
     stats = {"raw": 0, "compressed": 0, "failed": 0, "placeholder": 0}
     failures = []
 
     for rid, rel, w, h, size in iter_resources(data):
+        if wanted is not None and rid not in wanted:
+            continue
         blob = data[rel : rel + size]
         flag = blob[0]
         try:
