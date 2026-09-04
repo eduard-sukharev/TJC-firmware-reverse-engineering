@@ -168,6 +168,41 @@ byte length. Run `python3 -m pytest test_tjc_decompress.py -v`.
 - Python 3
 - Pillow (PIL)
 
+## Building a Customised Firmware
+
+`build_firmware.py` writes a **new** firmware from a directory of replacement
+assets. The original is only ever read.
+
+```bash
+python3 build_firmware.py                       # assets/ -> tjc_custom.tft
+python3 build_firmware.py -a my_icons -o my.tft
+python3 build_firmware.py --list                # dry run, writes nothing
+```
+
+Only the assets present in the input directory are touched; every other
+resource is left byte-for-byte alone, as are the resource table, the section
+layout, the file length and the obfuscated header 2. All four CRCs are
+recomputed afterwards and verified before the tool reports success.
+
+Assets are matched to resources by the id in the file name - `id0000_240x320.png`,
+`id0000.png` and `0.png` all mean resource 0. When the name carries dimensions
+they are checked against the resource table. Files whose name contains no id
+are reported and skipped rather than guessed at.
+
+Input and output directories are kept distinct on purpose: the extractor writes
+to `extracted_all/`, while builds read from `assets/`, and `build_firmware.py`
+refuses to read straight from the extractor's output (`--force` overrides).
+Copy in only the images you actually intend to change.
+
+A replacement must fit the space the original image already occupies; `--list`
+shows each asset against its budget. The tool aborts without writing if
+anything does not fit, unless `--skip-oversized` is given.
+
+Verified end to end: patching 3 of the 2058 assets produced a valid firmware of
+identical length where all four CRCs check out, re-extraction showed exactly
+those 3 images changed and the other 2055 byte-identical, and outside the
+resource payloads only 12 bytes moved - the three CRCs.
+
 ## Firmware Modification (no encryption - four CRCs)
 
 The image data is **not encrypted**; it is stored in the clear, which is why it
