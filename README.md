@@ -168,6 +168,77 @@ byte length. Run `python3 -m pytest test_tjc_decompress.py -v`.
 - Python 3
 - Pillow (PIL)
 
+## Firmware Modification (no encryption - four CRCs)
+
+The image data is **not encrypted**; it is stored in the clear, which is why it
+decodes directly. What guards the file is a set of CRC values plus an
+obfuscated second header.
+
+### The CRC primitive
+Nextion/TJC "byte based" CRC-32, poly `0x04C11DB7`, MSB-first, no reflection.
+Each input byte is fed to the shift register as a full 32-bit word (24 zero
+bits then the 8 data bits), the first word is XORed with `0xFFFFFFFF`, and 32
+zero bits are appended. See `tjc_checksums.py`.
+
+Note `0x15-0x16` reads `64 00` here, which is neither of the two values
+documented for Nextion (`00 00` byte based, `03 00` word based) - but the byte
+based variant is what actually verifies on this file.
+
+### The four values
+
+| Stored at | Covers | Broken by an image edit? |
+|-----------|--------|--------------------------|
+| `0x0044-0x0047` | `fw[0x10000:0x710000]` (bootloader + resources) | **yes** |
+| `0x00c4-0x00c7` | `fw[0x00:0xc4]` (header 1) | yes, because it covers `0x44` |
+| `0x018c-0x018f` | `fw[0xc8:0x18c]` (header 2) | no |
+| last 4 bytes | `fw[:-4]` (whole file) | **yes** |
+
+The whole-file CRC is stored little-endian with its **low byte XORed** by
+`fw[0x03] ^ fw[0x2e] ^ fw[0x3c]`.
+
+### Header 2 is obfuscated - and can be avoided
+Header 2 (`0xc8-0x18b`, entropy ~6.7) holds section offsets and sizes and is
+obfuscated with a position-dependent stream. It is *not* a repeating XOR key:
+the three fields documented as zero on Nextion Basic/Enhanced read back as
+three different values here.
+
+It never has to be touched, as long as an edit is layout preserving: rewrite a
+resource **in place**, leave its table entry (offset and allocated size) alone,
+and keep the file length unchanged. `patch_image.py` works this way - patching
+the 240x320 boot screen changed only the resource payload plus **12 bytes**
+(the three CRCs); header 2, the resource table and the file length were all
+untouched.
+
+### Size budget
+The replacement must fit the resource's originally allocated `size`. All 1994
+stock images re-encode within their own allocation, but an arbitrary
+replacement need not: worst case (all literal blocks) costs 2.5 bytes/pixel
+versus 2.0 for raw. A busy photograph in the 240x320 slot would not fit, while
+flat UI artwork compresses easily.
+
+```bash
+# check a file's integrity
+python3 tjc_checksums.py tjc.tft
+
+# replace an image and re-seal
+python3 patch_image.py -f tjc.tft -i 0 --image new.png -o tjc_patched.tft
+python3 patch_image.py -f tjc_patched.tft --verify-only
+```
+
+### Encoder fidelity
+`tjc_compress.py` is a faithful reimplementation of TJC's encoder. Re-encoding
+all 1994 compressed resources reproduces the original **output length and every
+control byte** at 100%. Two conventions were recovered from the firmware:
+
+- Run counts are 1..15, but the **first slot of a block is capped at 14**, which
+  is how the encoder guarantees it never accidentally emits the literal
+  signature `1F 11 11 11`. (No block in the firmware has a first count of 15.)
+- A block of 8 single pixels is always written as a literal block; the plain
+  form `11 11 11 11` never occurs.
+
+Only the filler bytes in unused (count 0) pixel slots differ from the stock
+file, and the decoder never reads those.
+
 ## License
 
 This project is for educational and research purposes. All firmware files belong to their respective owners.
