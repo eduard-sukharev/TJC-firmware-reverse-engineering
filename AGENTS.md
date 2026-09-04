@@ -7,9 +7,12 @@ Nextion, and the file format is shared with it.
 
 **Status: the image format and the firmware integrity checks are fully
 solved.** All 2058 real assets extract cleanly, and a modified firmware can be
-rebuilt and re-sealed so that every checksum verifies.
+rebuilt and re-sealed so that every checksum verifies. **Serial flashing is
+also working and has been verified on real hardware** - both the stock
+firmware and a custom rebuild have been flashed successfully via
+`tjc_serial_upload.py`.
 
-Not yet done: font parsing, and **nothing here has been flashed to hardware.**
+Not yet done: font parsing.
 
 ## Key files
 
@@ -21,6 +24,7 @@ Not yet done: font parsing, and **nothing here has been flashed to hardware.**
 | `extract_all.py` | Extract assets from a `.tft` or a `Resources.bin` dump |
 | `build_firmware.py` | Build a customised `.tft` from a directory of assets |
 | `tjc_bootloader.py` | Dump firmware sections/partitions (this produced `Resources.bin`) |
+| `tjc_serial_upload.py` | Flash a `.tft` to the display over serial (Nextion upload protocol v1.2) |
 | `assets/` | Input directory for builds, kept separate from `extracted_all/` |
 | `extracted_all/` | Extraction output (2058 assets) |
 | `tjc.tft` | Stock firmware, 7.48 MB |
@@ -207,10 +211,44 @@ identical length with all four CRCs passing; re-extraction showed exactly those
 3 images changed and the other 2055 byte-identical, and outside the resource
 payloads only **12 bytes** moved - the three CRCs.
 
+## Flashing over serial
+
+`tjc_serial_upload.py` implements the Nextion/TJC HMI upload protocol v1.2
+(the "skip-ahead" variant TJC's own editor uses), following the reference
+implementations at https://github.com/UNUF/Nexus (Python, v1.2) and
+https://github.com/hagronnestad/nextion-tft-uploader (C#, v1.0), as linked
+from `nxt-doc/Protocols/Upload Protocol v1.2.md`.
+
+```bash
+python3 tjc_serial_upload.py tjc_custom.tft                    # /dev/ttyUSB0, 115200
+python3 tjc_serial_upload.py tjc_custom.tft -u 921600           # faster data phase
+python3 tjc_serial_upload.py tjc_custom.tft -p /dev/ttyUSB1 -c 9600
+```
+
+**Handshake**: send a junk prefix + `connect` (twice - the first is routinely
+swallowed), each terminated by `FF FF FF`. The device replies
+`comok 0,<addr>-0,<model>,<fw>,<mcu>,<serial>,<flash_size>`. This is a plain
+text protocol - a raw binary DWIN handshake (`AA 00` + tail) also gets an
+`OK_V1.5` reply, but that path does **not** understand `whmi-wri*` commands
+and just echoes error frames (`24 FF FF FF ...`) back at any data sent to it;
+use the text protocol.
+
+**Upload**: burn one throwaway command (`bs=42`) since the first command
+after `connect` is always lost, then send
+`whmi-wris <file_size>,<upload_baud>,1` (the file size is read from the TFT
+header at `0x3c`, not the OS file size - they should match). Close and reopen
+the port at `upload_baud`, then send the file in 4 KB blocks. The device acks
+each block with `05`; on the *first* block only it may instead send
+`08` + a little-endian uint32 offset, meaning "skip ahead to this file
+offset" (used when the resources partition already matches, e.g. re-flashing
+the same firmware - only the trailing user-code section then gets sent).
+
+**Verified on real hardware** against a TJC3224T132_011N: both the stock
+`tjc.tft` and a custom rebuild (via `build_firmware.py`) flashed successfully
+end to end.
+
 ## Remaining work
 
-- **Nothing has been flashed to a real display.** Before flashing, confirm the
-  bootloader does not apply a further check we have not seen.
 - Fonts (the section after the pictures) are unparsed; they appear to be a
   straight copy of the corresponding `.zi` files.
 - `test.tft` is not parsed by the current tools (0 valid resource entries).
