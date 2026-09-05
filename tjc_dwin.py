@@ -25,6 +25,20 @@ CMD_BACKLIGHT = 0x5F
 CMD_ICON_SHOW = 0x97
 CMD_TEXT = 0x98
 
+# Tested live and NOT implemented on this panel -- do not retry these:
+# 0xC0 (Write RAM) / 0xC2 (Read RAM), the 32K-word RAM area documented in the
+# T5L guide. A 40x40 RGB565 block written to word address 0 changes nothing on
+# screen and 0xC2 answers zero bytes; the panel silently ignores both rather
+# than hanging. 0x97's lib_id does not address that RAM either -- sweeping
+# lib_id 0-5 drew the same baked-in icon regardless of the RAM contents. So
+# there is no native "upload a bitmap and blit it" path here, which is why
+# dwin_blit.py builds images out of 0x40+0x5B rectangles.
+#
+# The parser for this protocol is not in tjc.tft at all (no frame tail, no
+# "OK_V1.5", no frame-parsing compares, and the high-entropy components are not
+# a compressed kernel). It lives in the panel's resident kernel, reported as
+# v37 in the Nextion handshake. See AGENTS.md.
+
 HANDSHAKE_REPLY_PREFIX = b"\xaa\x00\x4f\x4b"  # "AA 00 OK..."
 
 # IMPORTANT, confirmed live this session: the binary DWIN parser and the

@@ -247,6 +247,213 @@ the same firmware - only the trailing user-code section then gets sent).
 `tjc.tft` and a custom rebuild (via `build_firmware.py`) flashed successfully
 end to end.
 
+## The DWIN-like serial protocol lives in the panel's kernel, not in the .tft
+
+The panel answers two mutually exclusive serial protocols: the Nextion/TJC text
+protocol (used by `tjc_serial_upload.py`) and a DWIN-style binary one
+(`AA <instr> <data> CC 33 C3 3C`, see `tjc_dwin.py`). **Neither parser is in
+`tjc.tft`.** Verified four ways:
+
+- The frame tail `CC 33 C3 3C` does not occur in the file at all - in any byte
+  order, nor even the substrings `33 C3 3C` / `C3 3C`.
+- The handshake reply string is absent. The panel really answers
+  `AA 00 "OK_V1.5" 00 00 50 00 01 CC 33 C3 3C`, but `OK_V1.5`, `OK_V`, `V1.5`,
+  `DWIN`, `T5UIC`, `TJC` and `Nextion` appear nowhere in the file.
+- No frame parser exists. Scanning the whole file for Thumb `CMP Rn,#imm8` /
+  `MOVS Rn,#imm8` against the tail bytes finds only two 200-byte windows
+  containing three of the four, neither containing `0xC3`, and one of them is
+  inside the picture data. A real parser must compare all four close together.
+- The two high-entropy components are not a compressed kernel: zlib, raw
+  deflate, gzip, lzma and bz2 all fail at 65 offsets each.
+
+What the file contains:
+
+| Entry | Size | Entropy | Content |
+|-------|------|---------|---------|
+| 0 | 17.5 KB | 7.09 | index table + data blob (`input.bin`). 8-byte records; each record's length field equals the delta to the next record's offset |
+| 1 | 120 KB | 7.11 | data table / LUT (halfwords `0x2808`/`0x2909` dominate, long runs of `09`) |
+| 2 | 13 KB | 5.34 | **LCD controller driver table** - ARM Thumb code, see below |
+| 3 | 1.8 KB | 7.84 | unidentified, no code |
+| 4 | 1.5 KB | 5.40 | `syscom.bin` message strings ("Lcd Driver Update OK!"), see below |
+| 5, 6 | 3.3 / 9.3 KB | 6.5-6.9 | **ARM Cortex-M plugin blobs**, see below |
+| 7 | 7.1 MB | - | resources |
+| 8 | 54 KB | 6.64 | Nextion-VM user bytecode |
+
+### The file DOES contain executable ARM code
+
+An earlier pass called parts 2, 5 and 6 data. **That was wrong.** The mistake
+was disassembling only from offset 0 (a linear sweep dies on the first header
+byte) and reading entropy as proof of packing - Thumb code with literal pools
+sits at ~6.5-7.1 entropy quite naturally. Scanning for `push {...,lr}` sites
+and walking each forward to a matching `pop {...,pc}` separates them cleanly:
+
+| Part | `push{lr}` sites | reaching a valid `pop{pc}` | |
+|---|---|---|---|
+| 5 | 16 | 15 (94%) | code |
+| 6 | 17 | 17 (100%) | code |
+| 2 | 38 | 28 (74%) | code |
+| 1 | 469 | 88 (19%) | data (periodic, stride 0x1c; disassembles as nonsense) |
+| 0 | 82 | 4 (5%) | data |
+| 8 | 42 | 2 (5%) | data |
+| 7 (images, control) | 31 | 2 (6%) | data - this is the noise floor |
+
+Architecture is ARM Thumb / Thumb-2 (Cortex-M). Sixteen other capstone
+architectures were tried; raw decode coverage does not discriminate (image data
+decodes at 99.8% too), but the mnemonic *distribution* does - data gives a
+degenerate `movs`/`lsls` pile, parts 5/6 give a flat, realistic
+`ldr`/`movs`/`adds`/`str`/`blx` spread.
+
+### Part 2: the LCD controller driver table
+
+```
+header(14) | N x [ id(2) | offset(2) | size(2) ] | driver blobs | 1bpp font
+```
+
+The table starts at `0x0e` and chains exactly: the first entry's offset equals
+the end of the table itself, and each `offset + size` is the next offset. 13
+entries, IDs are the controller part numbers:
+
+| id | chip | id | chip |
+|---|---|---|---|
+| `0x3030` `0x3041` `0x3042` `0x3043` | generic "00"/"A0"/"B0"/"C0" | `0x7795` | ST7795 |
+| `0x7735` | ST7735 | `0x7796` | ST7796 |
+| `0x7787` | ST7787 | `0x7799` | ST7799 |
+| `0x7789` | ST7789 | `0x9307` `0x9308` | ILI93xx |
+| | | `0x9A01` | unidentified |
+
+Each blob is Thumb code against a tiny two-slot vtable - `[r4+0]` =
+write_command, `[r4+4]` = write_data_byte. The set-window routine is
+unmistakable:
+
+```
+movs r0,#0x2a ; blx [r4]      ; CASET
+put hi/lo of [r4+0x0c], [r4+0x10]   ; x0, x1, big-endian
+movs r0,#0x2b ; blx [r4]      ; RASET
+put hi/lo of [r4+0x0e], [r4+0x12]   ; y0, y1
+movs r0,#0x2c ; blx [r4]      ; RAMWR
+```
+
+Coverage ends at `0x20ce`; the remaining 4.7 KB is 1-bit-per-pixel glyph data -
+the built-in font for the system messages, needed before resources are loaded.
+
+### Parts 5 and 6: loadable plugins with a kernel API vtable
+
+The container chains exactly, byte for byte, and recurses one level:
+
+```
+outer:  magic(4) | count(4) | count x [ id(4)  | offset(4) | size(4) ] | chunks
+inner:  magic(4) | count(4) | count x [ offset(4) | size(4) | crc(4)  ] | leaves
+```
+
+Note the field order differs between the two levels. Outer IDs are
+`0x000EF030 / 0x000EF031 / 0x000EF103` (part 5) and `0x0001F130 / 0x0001F140`
+(part 6); each appears exactly once in the whole file, so nothing else
+references them - the kernel must locate these by partition index.
+
+**The inner `crc` field is the project's own Nextion/TJC byte-based CRC-32**
+(`tjc_checksums.crc`) over the chunk - verified on 25 of 25 chunks. So a
+modified blob can be re-sealed with the existing tooling.
+
+Every leaf starts with a real Thumb prologue (`f0b5` `f3b5` `f7b5` `feb5`
+`70b5`, or Thumb-2 `2de9f34f` / `2de9f041`). Part 5's `0xEF030` and `0xEF031`
+are byte-identical; `0xEF103` is the same code rebuilt as Thumb-2 - i.e. per-core
+target variants.
+
+The blobs are position-independent and call back into the kernel through a
+vtable handed to them in a context struct (`ldr r4,[r1]` then
+`ldr rX,[r4,#imm]` / `blx rX`). Slots observed across the 25 leaves are dense
+and contiguous from `+0x00` to `+0x58` - **23 kernel entry points**. Two are
+pinned down:
+
+- `[r4+0x08](code)` = show system message. Codes `0x16/0x17/0x19/0x1b` index
+  part 4's string table, and the match is exact: a flash-verify routine calls
+  `0x17` on checksum failure ("Update Failed:check Error!") and `0x19` on
+  success ("Update Successed!").
+- `[r4+0x04](x, y, value, digits)` = draw a number. Called in a 2x4 grid of
+  coordinates `(0x40|0x90, 0xa0|0xb4|0xc8|0xdc)`. Inferred from the call
+  pattern, not proven.
+
+Identified leaf contents: a **QR code generator** in part 6 - conclusive, it
+buckets `strlen` against 17/32/49/78/106/134/154/192 to pick version 1-8, loads
+26 (v1 codeword count) and computes the module size as `version*4+17` - and in
+part 5 a **flash verify/update** routine that CRCs external flash in 0x7D000
+chunks and prints a 3-digit percentage. What the two parts are *collectively*
+is still open.
+
+Part 4 is their string table: `header(8) | 34 x uint16 offset | strings`, first
+offset `0x4c` = end of the table. Each string has a ~10-byte binary prefix
+(attributes/coordinates, undecoded).
+
+**What this does and does not change**: the DWIN protocol parser is still not
+here. None of this code parses `AA ... CC 33 C3 3C`; the frame tail and the
+`OK_V1.5` reply string still appear nowhere in the file, and the blobs are
+drawing/QR/flash helpers that call *into* the kernel rather than implementing
+it. So the resident-kernel conclusion stands. But the claim that the `.tft`
+carries no code at all was wrong, and the previous entropy-based reasoning
+should not be reused: parts 0 and 1 are data by the prologue test (5% and a
+periodic-data 19% against a 6% noise floor), which is far better evidence than
+the failed-decompression argument was.
+
+**Opportunity, untested**: since the kernel loads code blobs out of the `.tft`
+and the chunk CRC is a checksum this repo already computes, replacing a blob
+(e.g. the QR generator) with custom Thumb code is a plausible route to native
+code execution on the panel - and therefore to a real bitmap blit. It needs the
+kernel's blob-loading path understood first (how a blob is selected, where it
+is relocated, and what the context struct in `r1` actually holds).
+
+So the DWIN emulation sits in the panel's **resident kernel, which flashing a
+`.tft` does not replace**. The panel reports its own kernel version in the
+Nextion handshake reply:
+
+```
+comok 0,30599-0,TJC3224T132_011N,37,61760,FCD63401766D1644,8388608
+                                 ^^ kernel v37   ^^ MCU     ^^ 8 MB flash
+```
+
+Recovering that code means pulling it off the MCU (SWD/JTAG) or finding a TJC
+kernel update package; it cannot be extracted from a `.tft`. Black-box opcode
+probing over serial is what produced the working-opcode list below, and remains
+the cheap option.
+
+The MCU is marked **AiHMI C2 / 2307A / NTPGK** - TJC's own part, so there is no
+datasheet, no OpenOCD target config and no published memory map. The board
+carries **5 copper test pads**. Note that the 8 MB figure in the `comok` reply
+is the external SPI flash (where the `.tft` lands); the kernel is in the MCU's
+internal memory, and only that is worth dumping.
+
+### Opcodes: verified working
+
+`0x00` handshake, `0x40` set palette, `0x52` clear screen, `0x59` frame rect,
+`0x5B` fill rect, `0x5F` backlight, `0x97` icon show, `0x98` text.
+
+`0x97` draws icons baked into the `.tft` resources and works well - confirmed
+visually, including that consecutive icons at the same coordinates overdraw
+each other.
+
+### Opcodes: tested and dead
+
+- `0x01`, `0x02`, `0x22` (from the T5UIC1 kernel guide) - do nothing.
+- `0xC0` **Write RAM**, `0xC1` write font lib, `0xC2` **Read RAM** (documented
+  in the T5L guide as a 32K-word RAM area) - **not implemented**. Writing a
+  40x40 RGB565 block to word address 0 changes nothing on screen, and `0xC2`
+  returns zero bytes. The panel does not hang, it silently ignores both.
+- Using `0x97`'s `lib_id` as a handle to that RAM buffer does not work either:
+  sweeping `lib_id` 0-5 always drew the same firmware icon regardless of what
+  colour had just been written to RAM, so `lib_id` only ever indexes baked-in
+  icon libraries.
+
+**Consequence for dynamic images**: there is no native "upload an arbitrary
+RGB565 buffer and blit it" path on this panel. Drawing a G-code thumbnail
+really does have to be built out of `0x40`+`0x5B` rectangles, which is what
+`dwin_blit.py`'s bucket-sort encoder does - that is not a workaround pending a
+better command, it is the only mechanism available.
+
+> Measurement caveat: `Panel.handshake()` returns a latency equal to the
+> serial per-call `timeout` when that timeout is large, because `read(64)`
+> blocks for the full timeout waiting for 64 bytes the panel never sends. Keep
+> `timeout` small (~0.01s) whenever the returned number is used as a timing
+> probe.
+
 ## Remaining work
 
 - Fonts (the section after the pictures) are unparsed; they appear to be a
