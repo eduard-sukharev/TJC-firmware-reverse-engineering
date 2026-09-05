@@ -394,7 +394,7 @@ should not be reused: parts 0 and 1 are data by the prologue test (5% and a
 periodic-data 19% against a 6% noise floor), which is far better evidence than
 the failed-decompression argument was.
 
-**Opportunity, tried once, hung the panel**: since the kernel loads code blobs
+**Opportunity, tried twice, looks structurally protected**: since the kernel loads code blobs
 out of the `.tft` and the chunk CRC is a checksum this repo already computes,
 replacing a blob (e.g. the QR generator) with custom Thumb code looked like a
 plausible route to native code execution on the panel - and therefore to a
@@ -425,23 +425,71 @@ real bitmap blit. A minimal test of this was run on real hardware:
   (now do this at `-u 921600`, seconds instead of ~11 minutes at 115200)
   brought the panel back to a normal page-0 boot, confirmed visually.
 
-**What this proves and what it doesn't.** It confirms the blob **is** loaded
-and executed by the kernel (a pure argument change measurably changed
-behavior - it went from "prints a message" to "hangs," which is still a
-different outcome than doing nothing). It does *not* confirm the specific
-mechanism guessed at above: either this check genuinely re-runs on every boot
-and our tiny change broke something beyond just the message argument (e.g. the
-kernel validates the leaf's CRC against a *precomputed* value baked in
-elsewhere, not against the leaf bytes themselves, so a "correctly recomputed"
-CRC by our own formula still reads as corrupt to the kernel), or the ABI
-understanding from static analysis (register roles, what `blx r1` actually
-returns control to, what runs after this function) is wrong in some way that
-only matters once actually executed. Either way: **the blob-loading path is
-real, but not yet safely steerable** - the vtable slot map in the table above
-is a plausible hypothesis, not a verified ABI, and the next attempt needs a way
-to fail safely (e.g. testing on a spare/cheap panel, or finding a check that
-does not sit on the normal boot path) before touching this panel's flash
-again.
+**Follow-up experiment - decisive, and it changes the conclusion.** To tell
+apart "our code edit broke real execution" from "something rejects the edit
+before it ever runs," a second, more surgical test was run: leave every code
+byte untouched and corrupt *only* the inner container CRC field of one leaf
+that makes zero kernel vtable calls (the QR version-bucketing helper, a pure
+`strlen`-and-thresholds function with no plausible reason to run at boot),
+in both of its physical copies. Re-sealed the same way (all four firmware
+CRCs recomputed and verified OK; `tjc_codeblobs.py --list` correctly reported
+23/25, flagging exactly the two leaves that were deliberately broken).
+Flashed it. **Same class of failure**: after a power cycle, the panel showed
+`System Data ERROR!` - which is not a generic crash string, it is code `0x05`
+in this repo's own decoded `part4` string table (see above), read verbatim
+off real hardware. That is independent confirmation the string-table decode
+is correct, and, more importantly, direct proof that **something checks these
+partitions' integrity at boot and fails closed with a real diagnostic
+message, string content produced by this exact firmware, when it doesn't
+match.**
+
+**This reframes the first experiment.** Since a content-untouched,
+CRC-only-corrupted leaf produces the *same class* of boot failure as the
+content-patched leaf did, the simplest explanation covering both is not "the
+patched code executed and crashed" - it's that **some integrity check over
+partitions 5/6 rejected both edits before any of our changed logic ever ran**.
+This matters because the first experiment's leaf CRCs were re-sealed to be
+internally self-consistent by our own formula (`tjc_codeblobs.py --list`
+reported 25/25 at the time) and it *still* failed - which means our working
+model, "the inner container `crc` field is what the kernel checks, using the
+same byte-based CRC-32 documented for the firmware-level checksums," is
+probably wrong, or at least incomplete. The evidence for that formula was
+only ever that it reproduces the *stock, unmodified* values (25/25) - which a
+compiler bookkeeping field would also satisfy without the runtime ever
+checking it. A brute-force search of the whole file for a CRC-32 (both this
+project's byte-based variant and plain zlib) computed over several candidate
+ranges (part 5, part 6, part 5+6, the whole bootloader region) found no
+matching stored reference anywhere - so if there is a real reference value,
+it is not a plain, unobfuscated 4-byte match, or it isn't a checksum-against-
+a-stored-value at all (a plausible alternative: the resident kernel itself
+holds a compiled-in expected signature for the exact "system library" build
+it shipped with, which cannot be discovered or satisfied by editing the
+`.tft` - it would need a kernel dump).
+
+**Conclusion: this specific avenue - patching the kernel-loaded blobs in
+partitions 2/5/6 - looks structurally protected, not just poorly understood.**
+Two independent, differently-shaped edits (content-only; CRC-only) both broke
+boot the same way, and the protection could not be reverse-engineered
+offline from what's in the `.tft`. That is different from, and a harder
+problem than, the earlier vtable-ABI uncertainty. Recommend not spending
+further hardware iterations patching these specific partitions without new
+information (most plausibly a resident-kernel dump via SWD/JTAG, which would
+show what it actually checks). This does not affect the resource/image path
+at all - `build_firmware.py`'s in-place edits to partition 7 (images) remain
+fully safe and already proven on real hardware, because that content is
+apparently validated far more loosely (structurally, by the resource table,
+not by an exact hash) - only the small "system library" partitions 2/5/6
+exhibit this strict, boot-blocking protection.
+
+**A separate, practical observation from these two recovery cycles**: a full
+7.48 MB `.tft` upload at `-u 921600` completed in a few seconds, not the ~11
+minutes seen at 115200. That makes "rebuild one image resource with
+`build_firmware.py` and reflash the whole firmware" a genuinely fast
+operation now - fast enough to matter for staging a new thumbnail before a
+print starts, though a full reflash still reboots the whole panel (the tool
+prints "the display will restart" and it does), so it is not a substitute for
+updating a thumbnail live without disturbing the rest of the running UI. That
+remains what the rectangle-based `dwin_blit.py` approach is for.
 
 So the DWIN emulation sits in the panel's **resident kernel, which flashing a
 `.tft` does not replace**. The panel reports its own kernel version in the
