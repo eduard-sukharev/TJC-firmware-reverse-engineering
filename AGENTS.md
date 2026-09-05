@@ -394,12 +394,54 @@ should not be reused: parts 0 and 1 are data by the prologue test (5% and a
 periodic-data 19% against a 6% noise floor), which is far better evidence than
 the failed-decompression argument was.
 
-**Opportunity, untested**: since the kernel loads code blobs out of the `.tft`
-and the chunk CRC is a checksum this repo already computes, replacing a blob
-(e.g. the QR generator) with custom Thumb code is a plausible route to native
-code execution on the panel - and therefore to a real bitmap blit. It needs the
-kernel's blob-loading path understood first (how a blob is selected, where it
-is relocated, and what the context struct in `r1` actually holds).
+**Opportunity, tried once, hung the panel**: since the kernel loads code blobs
+out of the `.tft` and the chunk CRC is a checksum this repo already computes,
+replacing a blob (e.g. the QR generator) with custom Thumb code looked like a
+plausible route to native code execution on the panel - and therefore to a
+real bitmap blit. A minimal test of this was run on real hardware:
+
+- Identified, in all 5 physical copies (part 5 x3 ISA variants, part 6 x2),
+  the exact `movs r0,#0x19 ; blx r1` call that shows the "Update Successed!"
+  message (`r1` loaded a few instructions earlier from `[r4+8]`) after a
+  successful `.tft` flash - a code path proven to run on every real upload
+  this repo has done (see "Flashing over serial" above).
+- Patched only the immediate operand, `0x19 -> 0x1d` ("Touch Screen Adjust
+  OK!"), in all 5 copies. Zero size change, so no file-layout risk; recomputed
+  each patched leaf's own inner CRC and resealed all four firmware-level CRCs
+  (`tjc_checksums.reseal`) - `tjc_codeblobs.py --list` confirmed 25/25 leaf
+  CRCs still verified, `tjc_checksums.py` confirmed all four firmware CRCs.
+- Flashed to the real TJC3224T132_011N panel with `tjc_serial_upload.py`.
+  Upload completed cleanly (100%, exit 0, matching kernel v37/MCU 61760). The
+  panel then **hung**: solid white screen, no text, and it stopped answering
+  *both* serial protocols (Nextion `connect` and DWIN handshake both got zero
+  bytes back) - unlike the earlier DWIN-flood incident, this survived the
+  tool's announced restart, which points at this check running again (and
+  hanging again) very early on normal boot, not just right after upload.
+- **Recovered with a plain power cycle** - the serial upload receiver came
+  right back (`comok ...,37,61760,...` on the very next `connect`), confirming
+  the recovery model held: the upload receiver lives in a part of the resident
+  kernel independent of whatever this check does, so it stays reachable even
+  when this code path is broken. Re-flashing the untouched stock `tjc.tft`
+  (now do this at `-u 921600`, seconds instead of ~11 minutes at 115200)
+  brought the panel back to a normal page-0 boot, confirmed visually.
+
+**What this proves and what it doesn't.** It confirms the blob **is** loaded
+and executed by the kernel (a pure argument change measurably changed
+behavior - it went from "prints a message" to "hangs," which is still a
+different outcome than doing nothing). It does *not* confirm the specific
+mechanism guessed at above: either this check genuinely re-runs on every boot
+and our tiny change broke something beyond just the message argument (e.g. the
+kernel validates the leaf's CRC against a *precomputed* value baked in
+elsewhere, not against the leaf bytes themselves, so a "correctly recomputed"
+CRC by our own formula still reads as corrupt to the kernel), or the ABI
+understanding from static analysis (register roles, what `blx r1` actually
+returns control to, what runs after this function) is wrong in some way that
+only matters once actually executed. Either way: **the blob-loading path is
+real, but not yet safely steerable** - the vtable slot map in the table above
+is a plausible hypothesis, not a verified ABI, and the next attempt needs a way
+to fail safely (e.g. testing on a spare/cheap panel, or finding a check that
+does not sit on the normal boot path) before touching this panel's flash
+again.
 
 So the DWIN emulation sits in the panel's **resident kernel, which flashing a
 `.tft` does not replace**. The panel reports its own kernel version in the
