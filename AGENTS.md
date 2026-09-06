@@ -629,6 +629,23 @@ AiHMI C2 - the STM32F0x window doesn't transfer, and the technique may not
 work at all if AiHMI C2's flash controller re-arms RDP differently. This is
 a real follow-on project, not a quick next step.
 
+**That follow-on project now exists** as the `rp2040-debug-probe/` submodule
+(`eduard-sukharev/tjc-rp2040-debug-probe`). It holds a first firmware
+implementation of exactly this race: a bit-banged SWD master + USB-CDC control
+shell that holds the core in reset (or, in `POWER` mode, full power-cycles the
+panel through a high-side MOSFET switch), releases it, waits a *swept*
+post-release delay, and fires the single `TAR`+`DRW`+`RDBUFF` read - counting a
+word as real only when it comes back != the confirmed decoy `0x20001bac`. Pins
+match the as-soldered wiring (SWCLK=GP2, SWDIO=GP3, NRST=GP4, PWR=GP6). It
+tri-states the SWD lines before cutting power specifically so the Pico can't
+back-power the MCU through the very ESD clamp diodes used to find the pinout.
+The submodule's `README.md` carries the sourced vulnerability write-up
+(lucasteske.dev, racerxdl/stm32f0-pico-dump, Obermaier WOOT'17) and
+`docs/SCHEMATIC.md` the full wiring. Status: compiles clean, not yet built with
+the real Pico SDK or run on hardware, and the timing constants are unswept
+starting points - the race window's very existence on AiHMI C2 is still the
+open question. Reads only; it never lowers RDP.
+
 ### Opcodes: verified working
 
 `0x00` handshake, `0x40` set palette, `0x52` clear screen, `0x59` frame rect,
