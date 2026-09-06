@@ -1,3 +1,6 @@
 [submodule "rp2040-debug-probe"]
 	path = rp2040-debug-probe
 	url = git@github.com:eduard-sukharev/tjc-rp2040-debug-probe.git
+[submodule "nxt-doc"]
+	path = nxt-doc
+	url = git@github.com:UNUF/nxt-doc.git
