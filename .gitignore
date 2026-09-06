@@ -10,3 +10,4 @@ tjc_custom.tft
 tjc_patched.tft
 assets/*
 !assets/README.md
+*.uf2

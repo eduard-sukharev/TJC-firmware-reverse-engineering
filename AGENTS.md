@@ -511,6 +511,124 @@ carries **5 copper test pads**. Note that the 8 MB figure in the `comok` reply
 is the external SPI flash (where the `.tft` lands); the kernel is in the MCU's
 internal memory, and only that is worth dumping.
 
+### SWD pinout, found and confirmed live
+
+The 5 test pads are a standard SWD debug header. Found by multimeter alone
+(no schematic, no datasheet), method fully general and worth reusing on any
+similarly undocumented board:
+
+1. **Resistance (Ω) mode, unpowered, all 10 pad-pad pairs plus each pad
+   against a known GND point and a known VCC point.** Two pads read exactly
+   `0` to GND and to VCC respectively - those are GND and VCC. The other three
+   read 10-12 kΩ to *both* rails, consistent with ARM/ESD clamp diodes on a
+   real IC pin rather than a passive test point (a genuinely floating pad
+   reads open, not 10 kΩ both ways) - this is what told us the remaining 3
+   pads are live MCU pins before any power was applied.
+2. **Voltage at rest, powered, each of the 3 remaining pads to GND.** Two read
+   the VCC rail (`3.23 V`), one reads a flat `0 V`. The `0 V` one is very
+   likely **SWCLK** (commonly pulled low at idle so board noise can't forge a
+   SWD entry sequence); the two at VCC are ambiguous between **SWDIO**
+   (commonly pulled up) and **RESET** (commonly pulled up) from voltage alone.
+3. **Disambiguating the last two: momentarily short each to GND while the
+   panel is running and watch the screen.** The one that makes the panel
+   visibly reboot is **RESET**. The other is **SWDIO**. This step is the only
+   one that touches the running board, and it's a standard, low-risk,
+   fully-reversible test (worst case is exactly what it's testing for - a
+   reboot).
+
+Final mapping, confirmed live end to end:
+
+| Pad | Signal |
+|-----|--------|
+| 1   | GND |
+| 2   | RESET (NRST) |
+| 3   | SWCLK |
+| 4   | SWDIO |
+| 5   | VCC (3.3 V) |
+
+### What a live SWD session reveals
+
+Probe: a Raspberry Pi Pico (RP2040) flashed with `raspberrypi/debugprobe`'s
+`debugprobe_on_pico.uf2` (that project is the current name for what used to be
+called picoprobe). Its fixed pin map (`include/board_pico_config.h`): SWCLK =
+GPIO2, SWDIO = GPIO3, target RESET = GPIO1. Wire GND-GND, those three pins to
+pads 3/4/2, and leave the panel's own VCC (pad 5) unconnected to the probe -
+the panel stays powered from its own serial adapter, only logic/reset lines
+are shared. `lsusb` shows it as `2e8a:000c "Raspberry Pi Debugprobe on Pico
+(CMSIS-DAP)"`.
+
+A vendor-agnostic OpenOCD SWD probe - no target config, no flash driver, just
+the generic `cortex_m` target type - gets a full core identification and
+memory access:
+
+```
+openocd -c "adapter driver cmsis-dap" -c "transport select swd" \
+        -c "adapter speed 1000" \
+        -c "swd newdap dummy cpu -expected-id 0x0bc11477" \
+        -c "dap create dummy.dap -chain-position dummy.cpu" \
+        -c "target create dummy.cpu cortex_m -dap dummy.dap" \
+        -c "init" -c "halt" -c "mdw 0x00000000 16"
+```
+
+Result: `SWD DPIDR 0x0bc11477`, then `[dummy.cpu] Cortex-M0+ r0p1 processor
+detected` - **the AiHMI C2 core is ARM Cortex-M0+ r0p1**. (`reset halt` timed
+out - `SYSRESETREQ` isn't acknowledged the way OpenOCD expects on this chip -
+but plain `halt`, a debug-request halt with no reset involved, works fine.
+This also confirms why part 5's leaves come in both plain-Thumb and Thumb-2
+copies: M0+ is ARMv6-M, Thumb-only, so whichever of TJC's product line uses
+this core needs the plain-Thumb build specifically.)
+
+Reading the vector table at `0x00000000` with the core halted:
+
+```
+0x00000000: 20001ff0 080018c5 080018d3 080018d5 00000000 08005739 0800fda8 12344321
+```
+
+`[0]=0x20001ff0` is the initial SP, placing SRAM at **`0x20000000`**.
+`[1]=0x080018c5` is the Reset_Handler (bit 0 set = Thumb), placing flash at
+**`0x08000000`** - the same convention STM32 and most Cortex-M vendors use.
+`mdw 0x20000000 16` reads back *identical* content to address 0, meaning
+address 0 is an alias of SRAM (the boot ROM copies the vector table there),
+not of flash.
+
+**Flash read-out protection (RDP) is enabled.** `mdw 0x08000000 16` and a
+16 KB `dump_image` from that address both return the single repeating word
+`0x20001bac` for the entire range - not real code, a fixed pattern the flash
+controller substitutes when the debug port tries to read protected flash.
+This is a deliberate, standard anti-cloning feature, not a bug in our
+approach, and it is why the resident kernel (confirmed to exist, confirmed to
+implement the DWIN protocol, confirmed to load code out of the `.tft`'s
+partitions 2/5/6) still can't be dumped even with a fully working, correctly
+wired debug port.
+
+**On trying to defeat it: don't reach for a "disable RDP" command.** On
+STM32-family chips (and most vendors' equivalent features) lowering the
+protection level triggers an automatic mass-erase of the *entire* flash as a
+built-in anti-tamper measure - AiHMI C2 has no datasheet to confirm or rule
+this out, so the safe assumption is that it behaves the same way, and doing
+that would permanently destroy kernel v37, the one thing this whole
+investigation has been protecting throughout. No unlock/erase command was
+attempted.
+
+**A real, comparatively low-risk lead for later, not yet attempted:** the
+DPIDR `0x0bc11477` is also reported by genuine ST STM32G0 parts, i.e. AiHMI C2
+likely licenses the same ARM Cortex-M0+ IP. A documented technique for
+STM32F0x (lucasteske.dev, "STM32F0x Protected Firmware Dumper") reads
+protected flash by racing the SWD read against RDP re-arming after a reset:
+RDP on these chips takes a moment to re-engage after `NRST` is released, and
+a sufficiently fast raw SWD read can catch one word of real flash content in
+that window before it closes, one word per power-cycle. Notably: it never
+asks the flash controller to lower protection, so it does not trip the
+mass-erase countermeasure above - the risk profile is completely different
+from an RDP-downgrade attempt. It's also the same tool we already have (the
+author used a Pico) - but it needs custom low-level PIO/bit-bang firmware for
+precise microsecond timing (OpenOCD's own reset/halt sequencing is nowhere
+near fast enough), a way to power-cycle the panel from a GPIO (not wired
+yet), and the exact timing window is chip-specific and completely unknown for
+AiHMI C2 - the STM32F0x window doesn't transfer, and the technique may not
+work at all if AiHMI C2's flash controller re-arms RDP differently. This is
+a real follow-on project, not a quick next step.
+
 ### Opcodes: verified working
 
 `0x00` handshake, `0x40` set palette, `0x52` clear screen, `0x59` frame rect,
