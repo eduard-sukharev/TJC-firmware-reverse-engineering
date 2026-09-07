@@ -630,21 +630,38 @@ work at all if AiHMI C2's flash controller re-arms RDP differently. This is
 a real follow-on project, not a quick next step.
 
 **That follow-on project now exists** as the `rp2040-debug-probe/` submodule
-(`eduard-sukharev/tjc-rp2040-debug-probe`). It holds a first firmware
-implementation of exactly this race: a bit-banged SWD master + USB-CDC control
-shell that holds the core in reset (or, in `POWER` mode, full power-cycles the
-panel through a high-side MOSFET switch), releases it, waits a *swept*
-post-release delay, and fires the single `TAR`+`DRW`+`RDBUFF` read - counting a
-word as real only when it comes back != the confirmed decoy `0x20001bac`. Pins
-match the as-soldered wiring (SWCLK=GP2, SWDIO=GP3, NRST=GP4, PWR=GP6). It
-tri-states the SWD lines before cutting power specifically so the Pico can't
-back-power the MCU through the very ESD clamp diodes used to find the pinout.
-The submodule's `README.md` carries the sourced vulnerability write-up
-(lucasteske.dev, racerxdl/stm32f0-pico-dump, Obermaier WOOT'17) and
-`docs/SCHEMATIC.md` the full wiring. Status: compiles clean, not yet built with
-the real Pico SDK or run on hardware, and the timing constants are unswept
-starting points - the race window's very existence on AiHMI C2 is still the
-open question. Reads only; it never lowers RDP.
+(`eduard-sukharev/tjc-rp2040-debug-probe`). It holds a bit-banged SWD master +
+USB-CDC control shell that holds the core in reset (or, in `POWER` mode, full
+power-cycles the panel through a single low-side N-MOSFET, IRLB3034, in the
+ground return), releases it, waits a swept post-release delay, and reads
+flash. Pins match the as-soldered wiring (SWCLK=GP2, SWDIO=GP3, NRST=GP4,
+PWR=GP6). It tri-states the SWD lines before cutting power specifically so
+the Pico can't back-power the MCU through the very ESD clamp diodes used to
+find the pinout. The submodule's `README.md` carries the sourced
+vulnerability write-up (lucasteske.dev, racerxdl/stm32f0-pico-dump, Obermaier
+WOOT'17) and `docs/SCHEMATIC.md` the full wiring.
+
+**Run on real hardware (2026-09-07) - negative result, documented in full in
+the submodule's `README.md` "Findings" section.** The SWD/AP implementation
+itself proved fully correct (SRAM reads exactly and consistently right; one
+real firmware bug in the AHB-AP CSW setup was found and fixed along the
+way). RDP was confirmed active and, at the one condition found to be
+perfectly reproducible (200ms after a real power-on-reset plus an actual
+Cortex-M debug halt), gives a **fixed word identical across a 32KB address
+span** (`0x0000fffa`) - a decoy, not real content, the same phenomenon as
+this document's own `0x20001bac` finding above, just a different fixed value
+for this firmware's own access path. A dense timing sweep from 0-3000ms
+post-power-on found no window where flash reads settled to real,
+address-varying data: 0-30ms is unreliable because the power rail itself
+hasn't settled yet (SRAM reads garbage there too), and from ~40ms onward -
+where SRAM is rock solid - flash reads keep changing between identical,
+back-to-back attempts at the same delay, all the way out to 3000ms, with or
+without a real core halt. **The honest gap, not a dead end**: sub-millisecond
+timing was never actually tested - this firmware's power sequencing is only
+`sleep_ms()`-precise, mechanically cycling a plain N-MOSFET, nowhere near
+tight enough to search a window that (if one exists at all on this chip)
+most likely lives in the first few hundred microseconds. Reads only; it
+never lowers RDP; nothing about this touched or risked the resident kernel.
 
 ### Opcodes: verified working
 
